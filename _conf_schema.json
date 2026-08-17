@@ -1,0 +1,34 @@
+{
+  "dsh_base_url": {
+    "type": "string",
+    "description": "DSH Web RPC 地址",
+    "default": "",
+    "hint": "留空时读取 DSH_BASE_URL；环境变量也未设置时使用 http://127.0.0.1:3081。不要填写公网地址。"
+  },
+  "group_whitelist": {
+    "type": "list",
+    "description": "允许使用 NOVA 知识库的 QQ 群号",
+    "default": [],
+    "hint": "每项填写一个群 ID。只有白名单群内直接 @机器人 的文本才会触发；QQ 官方机器人应填写事件提供的 group_openid。",
+    "items": {
+      "type": "string"
+    }
+  },
+  "request_timeout_seconds": {
+    "type": "int",
+    "description": "单次 DSH RPC 网络超时（秒）",
+    "default": 15,
+    "hint": "只限制创建、提交和历史查询等短 HTTP 请求，不限制模型整轮回答时间。"
+  },
+  "response_timeout_seconds": {
+    "type": "int",
+    "description": "等待 DSH 完成一轮回答的最长时间（秒）",
+    "default": 180
+  },
+  "poll_interval_seconds": {
+    "type": "float",
+    "description": "查询 DSH 回答状态的间隔（秒）",
+    "default": 0.5,
+    "hint": "建议保持 0.5；过小会产生不必要的本地请求。"
+  }
+}
