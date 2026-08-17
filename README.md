@@ -18,7 +18,9 @@
 - 满足白名单和直接 `@机器人` 条件的群消息会先于普通优先级的通用问答处理器接管，避免其他插件拒绝该群后提前停止事件传播。
 - 每个 `bot_id + group_id` 对应一个稳定的 DSH Session，同群上下文连续，不同群完全分开。
 - 每个 `bot_id + sender_id` 对应另一个 `qq-private` Session；好友私聊不会与任何群聊共享上下文。
-- 同一 Session 的消息按 FIFO 顺序提交，上一轮结束后才提交下一轮。
+- 同一 Session 的消息严格按 FIFO 顺序逐条处理和回复，上一轮结束后才处理下一条；不同 Session 仍可并发。
+- 群聊的正常回答、用法提示、限额提示和故障提示都会引用触发它们的原消息，便于多人同时提问时对应上下文。
+- 每个 Session 默认最多接受最近 3600 秒内的 20 个问题；达到上限会自动回复提示，其他群和好友 Session 不受影响。
 - DSH 必须只注册一个名为 `NOVA知识库` 的 Workspace，新 Session 必须解析为 `nova-qa` Preset，否则插件拒绝工作。
 - DSH 失败或超时时，原会话只收到简短的暂不可用提示，详细错误留在 AstrBot 日志。
 
@@ -46,6 +48,7 @@ AstrBot 会读取 `metadata.yaml` 并自动安装 `requirements.txt` 中的 `htt
 | `dsh_base_url` | 空 | 优先使用控制台值；留空读取 `DSH_BASE_URL`；仍为空则使用 `http://127.0.0.1:3081` |
 | `group_whitelist` | `[]` | 允许触发的 QQ 群 ID。QQ 官方机器人填写事件提供的 `group_openid` |
 | `user_whitelist` | `[]` | 允许通过私聊 `/cac <问题>` 触发的 QQ 用户 ID；QQ 官方机器人填写发送者 `openid` |
+| `session_hourly_limit` | `20` | 每个群或好友 Session 最近 3600 秒内允许的问题数；`0` 表示关闭限额 |
 | `request_timeout_seconds` | `15` | 单次 DSH HTTP RPC 的网络超时 |
 | `response_timeout_seconds` | `180` | 等待一轮 DSH 回答完成的总时限 |
 | `poll_interval_seconds` | `0.5` | 查询 Session 历史的间隔 |
@@ -55,6 +58,8 @@ AstrBot 会读取 `metadata.yaml` 并自动安装 `requirements.txt` 中的 `htt
 ```bash
 export DSH_BASE_URL=http://127.0.0.1:3081
 ```
+
+限额只保存在 AstrBot 插件进程内存中；插件重载或 AstrBot 重启后重新计数。只有通过限额检查、准备提交给 DSH 的有效问题才计数，空问题和未触发消息不计数。
 
 `DSH_HOME`、`DSH_QA_WORKSPACE` 和 `DEEPSEEK_API_KEY` 属于 DSH 服务，不应填入 AstrBot 插件配置。
 

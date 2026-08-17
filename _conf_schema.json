@@ -23,6 +23,12 @@
       "type": "string"
     }
   },
+  "session_hourly_limit": {
+    "type": "int",
+    "description": "每个 Session 每小时允许的提问数",
+    "default": 20,
+    "hint": "每个群或好友分别按最近 3600 秒计数；达到上限会自动回复提示。填写 0 可关闭限额，插件重载后计数清空。"
+  },
   "request_timeout_seconds": {
     "type": "int",
     "description": "单次 DSH RPC 网络超时（秒）",

@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import At, Plain
+from astrbot.api.message_components import At, Plain, Reply
 from astrbot.api.star import Context, Star, register
 
 from .dsh_client import DshClient, DshError
+from .rate_limit import SessionHourlyLimiter
 from .routing import (
     build_private_session_id,
     build_private_source_metadata,
@@ -26,6 +28,7 @@ from .routing import (
 
 SUPPORTED_QQ_PLATFORMS = frozenset({"aiocqhttp", "qq_official", "qq_official_webhook"})
 GROUP_HANDLER_PRIORITY = 50
+HOURLY_LIMIT_MESSAGE = "本会话每小时提问次数已达到上限，请稍后再试。"
 
 
 def _config_number(config: AstrBotConfig, key: str, default: float) -> float:
@@ -33,6 +36,13 @@ def _config_number(config: AstrBotConfig, key: str, default: float) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ValueError(f"{key} must be a number")
     return float(value)
+
+
+def _config_nonnegative_int(config: AstrBotConfig, key: str, default: int) -> int:
+    value: Any = config.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{key} must be a non-negative integer")
+    return value
 
 
 def _raw_plain_text(event: AstrMessageEvent) -> str:
@@ -60,7 +70,7 @@ def _message_timestamp(event: AstrMessageEvent) -> int:
     "astrbot_plugin_dsh_nova_qa",
     "whyself",
     "把白名单 QQ 群 @提问及白名单好友 /cac 私聊转发给 DSH NOVA 知识库",
-    "1.1.1",
+    "1.2.0",
 )
 class DshNovaQaPlugin(Star):
     """Route each allowlisted QQ group or friend to a stable NOVA QA Session."""
@@ -83,16 +93,28 @@ class DshNovaQaPlugin(Star):
             response_timeout_seconds=_config_number(config, "response_timeout_seconds", 180),
             poll_interval_seconds=_config_number(config, "poll_interval_seconds", 0.5),
         )
+        self.session_hourly_limit = _config_nonnegative_int(config, "session_hourly_limit", 20)
+        self._rate_limiter = SessionHourlyLimiter(self.session_hourly_limit)
+        self._session_locks: dict[str, asyncio.Lock] = {}
 
     async def initialize(self) -> None:
         """Report non-sensitive routing configuration after plugin load."""
 
         logger.info(
-            "DSH NOVA QA plugin loaded: endpoint=%s, allowlisted_groups=%d, allowlisted_users=%d",
+            "DSH NOVA QA plugin loaded: endpoint=%s, allowlisted_groups=%d, "
+            "allowlisted_users=%d, session_hourly_limit=%d",
             self.dsh_base_url,
             len(self.group_whitelist),
             len(self.user_whitelist),
+            self.session_hourly_limit,
         )
+
+    @staticmethod
+    def _group_result(event: AstrMessageEvent, text: str):
+        """Build a group response quoting the triggering message."""
+
+        message_id = str(getattr(event.message_obj, "message_id", ""))
+        return event.chain_result([Reply(id=message_id), Plain(text)])
 
     @filter.event_message_type(
         filter.EventMessageType.GROUP_MESSAGE,
@@ -118,8 +140,11 @@ class DshNovaQaPlugin(Star):
             return
 
         event.stop_event()
+        session_id = build_session_id(bot_id, group_id)
         if not question:
-            yield event.plain_result("请在 @机器人 后写上问题。")
+            lock = self._session_locks.setdefault(session_id, asyncio.Lock())
+            async with lock:
+                yield self._group_result(event, "请在 @机器人 后写上问题。")
             return
 
         message = event.message_obj
@@ -133,16 +158,20 @@ class DshNovaQaPlugin(Star):
             platform=event.get_platform_name(),
             platform_id=event.get_platform_id(),
         )
-        session_id = build_session_id(bot_id, group_id)
+        lock = self._session_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            if not self._rate_limiter.accept(session_id):
+                yield self._group_result(event, HOURLY_LIMIT_MESSAGE)
+                return
 
-        try:
-            answer = await self.dsh.ask(session_id, metadata, question)
-        except DshError:
-            logger.exception("DSH NOVA QA request failed")
-            yield event.plain_result("知识库服务暂时不可用，请稍后再试。")
-            return
+            try:
+                answer = await self.dsh.ask(session_id, metadata, question)
+            except DshError:
+                logger.exception("DSH NOVA QA request failed")
+                yield self._group_result(event, "知识库服务暂时不可用，请稍后再试。")
+                return
 
-        yield event.plain_result(answer)
+            yield self._group_result(event, answer)
 
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
     @filter.command("cac", priority=100)
@@ -164,8 +193,11 @@ class DshNovaQaPlugin(Star):
             return
 
         event.stop_event()
+        session_id = build_private_session_id(bot_id, sender_id)
         if not question:
-            yield event.plain_result("用法: /cac <问题>")
+            lock = self._session_locks.setdefault(session_id, asyncio.Lock())
+            async with lock:
+                yield event.plain_result("用法: /cac <问题>")
             return
 
         message = event.message_obj
@@ -178,16 +210,20 @@ class DshNovaQaPlugin(Star):
             platform=event.get_platform_name(),
             platform_id=event.get_platform_id(),
         )
-        session_id = build_private_session_id(bot_id, sender_id)
+        lock = self._session_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            if not self._rate_limiter.accept(session_id):
+                yield event.plain_result(HOURLY_LIMIT_MESSAGE)
+                return
 
-        try:
-            answer = await self.dsh.ask(session_id, metadata, question)
-        except DshError:
-            logger.exception("DSH NOVA QA private request failed")
-            yield event.plain_result("知识库服务暂时不可用，请稍后再试。")
-            return
+            try:
+                answer = await self.dsh.ask(session_id, metadata, question)
+            except DshError:
+                logger.exception("DSH NOVA QA private request failed")
+                yield event.plain_result("知识库服务暂时不可用，请稍后再试。")
+                return
 
-        yield event.plain_result(answer)
+            yield event.plain_result(answer)
 
     async def terminate(self) -> None:
         """Close outbound HTTP connections during unload or update."""

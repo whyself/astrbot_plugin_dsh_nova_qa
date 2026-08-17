@@ -111,8 +111,9 @@ https://github.com/whyself/astrbot_plugin_dsh_nova_qa
 1. `dsh_base_url`：同机非容器可留空；其他私有网络填写内部 DSH URL。
 2. `group_whitelist`：逐项填写允许使用的群 ID；QQ 官方机器人填写 `group_openid`。
 3. `user_whitelist`：逐项填写允许通过好友私聊 `/cac <问题>` 使用知识库的 QQ 用户 ID。
-4. 保持 `request_timeout_seconds=15`、`response_timeout_seconds=180`、`poll_interval_seconds=0.5`，除非服务器日志表明需要调整。
-5. 保存并重载插件。
+4. `session_hourly_limit`：填写每个群或好友 Session 最近 3600 秒允许的问题数；`0` 表示关闭限额。
+5. 保持 `request_timeout_seconds=15`、`response_timeout_seconds=180`、`poll_interval_seconds=0.5`，除非服务器日志表明需要调整。
+6. 保存并重载插件。
 
 ## 7. 端到端验收
 

@@ -2,7 +2,7 @@ name: astrbot_plugin_dsh_nova_qa
 display_name: DSH NOVA 知识库
 short_desc: 将白名单 QQ 群的直接 @提问和白名单好友的 /cac 私聊转发给 DSH NOVA 知识库。
 desc: 使用 DeepSeek Harness 原生 Web RPC，为每个白名单 QQ 群或好友维护独立的 NOVA 知识问答 Session。
-version: 1.1.1
+version: 1.2.0
 author: whyself
 repo: https://github.com/whyself/astrbot_plugin_dsh_nova_qa
 astrbot_version: ">=4.17,<5"
