@@ -157,7 +157,7 @@ class DshClient:
             return workspace_id
 
     async def ensure_session(self, session_id: str) -> None:
-        """Idempotently create the group Session with the server-owned default Preset."""
+        """Idempotently create a routed Session with the server-owned default Preset."""
 
         workspace_id = await self.resolve_workspace_id()
         value = await self.rpc(
@@ -177,7 +177,7 @@ class DshClient:
         source_metadata: dict[str, Any],
         question: str,
     ) -> str:
-        """Queue one group message and wait for that Session's next completed answer."""
+        """Queue one routed QQ message and wait for the Session's completed answer."""
 
         lock = self._session_locks.setdefault(session_id, asyncio.Lock())
         async with lock:
@@ -190,6 +190,11 @@ class DshClient:
                 separators=(",", ":"),
                 sort_keys=True,
             )
+            metadata_tag = (
+                "private_message_metadata"
+                if source_metadata.get("source_type") == "qq_private"
+                else "group_message_metadata"
+            )
             await self.rpc(
                 "session.prompt",
                 {
@@ -198,11 +203,7 @@ class DshClient:
                     "content": [
                         {
                             "type": "text",
-                            "text": (
-                                "<group_message_metadata>\n"
-                                f"{metadata_json}\n"
-                                "</group_message_metadata>"
-                            ),
+                            "text": (f"<{metadata_tag}>\n{metadata_json}\n</{metadata_tag}>"),
                         },
                         {"type": "text", "text": question},
                     ],

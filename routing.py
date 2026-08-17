@@ -1,4 +1,4 @@
-"""Pure routing helpers for QQ group messages."""
+"""Pure routing helpers for QQ group and friend messages."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Any
 
 DEFAULT_DSH_BASE_URL = "http://127.0.0.1:3081"
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+_PRIVATE_CAC = re.compile(r"^/cac(?:\s+(?P<query>.*))?$", re.IGNORECASE | re.DOTALL)
 
 
 def resolve_base_url(configured: str, environment: Mapping[str, str]) -> str:
@@ -18,12 +19,22 @@ def resolve_base_url(configured: str, environment: Mapping[str, str]) -> str:
     return (candidate or DEFAULT_DSH_BASE_URL).rstrip("/")
 
 
-def normalize_group_whitelist(values: Iterable[object]) -> frozenset[str]:
-    """Normalize AstrBot list values into comparable QQ group IDs."""
-
+def _normalize_whitelist(values: Iterable[object]) -> frozenset[str]:
     normalized = {str(value).strip() for value in values if value is not None}
     normalized.discard("")
     return frozenset(normalized)
+
+
+def normalize_group_whitelist(values: Iterable[object]) -> frozenset[str]:
+    """Normalize AstrBot list values into comparable QQ group IDs."""
+
+    return _normalize_whitelist(values)
+
+
+def normalize_user_whitelist(values: Iterable[object]) -> frozenset[str]:
+    """Normalize AstrBot list values into comparable QQ user IDs."""
+
+    return _normalize_whitelist(values)
 
 
 def _safe_session_part(value: str) -> str:
@@ -37,6 +48,27 @@ def build_session_id(bot_id: str, group_id: str) -> str:
     """Build one filesystem-safe, stable DSH Session ID per bot/group pair."""
 
     return f"qq-group-{_safe_session_part(bot_id)}-{_safe_session_part(group_id)}"
+
+
+def build_private_session_id(bot_id: str, sender_id: str) -> str:
+    """Build one filesystem-safe, stable DSH Session ID per bot/friend pair."""
+
+    return f"qq-private-{_safe_session_part(bot_id)}-{_safe_session_part(sender_id)}"
+
+
+def extract_private_cac_query(text: str) -> str | None:
+    """Return an exact private `/cac` command's question or None for non-matches."""
+
+    match = _PRIVATE_CAC.fullmatch(text.strip())
+    if match is None:
+        return None
+    return (match.group("query") or "").strip()
+
+
+def is_slash_command(text: str) -> bool:
+    """Return whether text is reserved for AstrBot's slash-command handlers."""
+
+    return text.lstrip().startswith("/")
 
 
 def has_direct_mention(messages: Iterable[object], bot_id: str, at_type: type) -> bool:
@@ -72,4 +104,30 @@ def build_source_metadata(
         "sender_id": sender_id,
         "sender_name": sender_name,
         "trigger": "at_bot",
+    }
+
+
+def build_private_source_metadata(
+    *,
+    sender_id: str,
+    sender_name: str,
+    message_id: str,
+    timestamp: int,
+    bot_id: str,
+    platform: str,
+    platform_id: str,
+) -> dict[str, Any]:
+    """Return stable QQ friend fields passed to the NOVA Persona."""
+
+    return {
+        "source_type": "qq_private",
+        "platform": platform,
+        "platform_id": platform_id,
+        "bot_id": bot_id,
+        "peer_id": sender_id,
+        "message_id": message_id,
+        "timestamp": timestamp,
+        "sender_id": sender_id,
+        "sender_name": sender_name,
+        "trigger": "slash_cac",
     }

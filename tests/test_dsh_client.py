@@ -30,7 +30,36 @@ def method_of(request: httpx.Request) -> str:
 
 
 @pytest.mark.asyncio
-async def test_ask_creates_fixed_session_and_returns_completed_answer() -> None:
+@pytest.mark.parametrize(
+    ("session_id", "source_metadata", "metadata_tag"),
+    [
+        (
+            "qq-group-7-9",
+            {
+                "source_type": "qq_group",
+                "sender_id": "42",
+                "sender_name": "小明",
+                "group_id": "9",
+            },
+            "group_message_metadata",
+        ),
+        (
+            "qq-private-7-42",
+            {
+                "source_type": "qq_private",
+                "sender_id": "42",
+                "sender_name": "小明",
+                "peer_id": "42",
+            },
+            "private_message_metadata",
+        ),
+    ],
+)
+async def test_ask_creates_fixed_session_and_returns_completed_answer(
+    session_id: str,
+    source_metadata: dict[str, Any],
+    metadata_tag: str,
+) -> None:
     methods: list[str] = []
     prompt_payload: dict[str, Any] = {}
     history_calls = 0
@@ -59,12 +88,12 @@ async def test_ask_creates_fixed_session_and_returns_completed_answer() -> None:
             )
         if method == "session.create":
             assert body["payload"] == {
-                "sessionId": "qq-group-7-9",
+                "sessionId": session_id,
                 "workspaceId": "workspace-1",
             }
             return rpc_response(
                 request,
-                {"sessionId": "qq-group-7-9", "agentPreset": "nova-qa"},
+                {"sessionId": session_id, "agentPreset": "nova-qa"},
             )
         if method == "session.history":
             history_calls += 1
@@ -142,9 +171,8 @@ async def test_ask_creates_fixed_session_and_returns_completed_answer() -> None:
         poll_interval_seconds=0,
         transport=httpx.MockTransport(handler),
     )
-    metadata = {"sender_id": "42", "sender_name": "小明", "group_id": "9"}
     try:
-        answer = await client.ask("qq-group-7-9", metadata, "NOVA 是什么？")
+        answer = await client.ask(session_id, source_metadata, "NOVA 是什么？")
     finally:
         await client.close()
 
@@ -157,12 +185,13 @@ async def test_ask_creates_fixed_session_and_returns_completed_answer() -> None:
         "session.history",
         "session.history",
     ]
-    assert prompt_payload["sessionId"] == "qq-group-7-9"
+    assert prompt_payload["sessionId"] == session_id
     assert prompt_payload["mode"] == "queue"
     metadata_block, question_block = prompt_payload["content"]
     assert question_block == {"type": "text", "text": "NOVA 是什么？"}
     assert metadata_block["type"] == "text"
-    assert metadata_block["text"].startswith("<group_message_metadata>\n")
+    assert metadata_block["text"].startswith(f"<{metadata_tag}>\n")
+    assert metadata_block["text"].endswith(f"\n</{metadata_tag}>")
     assert '"sender_name":"小明"' in metadata_block["text"]
 
 

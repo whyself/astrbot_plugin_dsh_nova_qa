@@ -4,19 +4,22 @@
 [![DSH](https://img.shields.io/badge/DeepSeek-Harness-2f81f7.svg)](https://github.com/deepseek-ai/deepseek-harness)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-一个独立的 AstrBot QQ 插件：把白名单群中直接 `@机器人` 的文本提问转发给已经安装 NOVA QA Bundle 的 DeepSeek Harness，并把最终回答发回原群。
+一个独立的 AstrBot QQ 插件：把白名单群中直接 `@机器人` 的文本提问，以及白名单好友私聊发送的 `/cac <问题>`，转发给已经安装 NOVA QA Bundle 的 DeepSeek Harness，并把最终回答发回原会话。
 
-插件不安装 DSH、不读取知识库文件，也不接管 DSH 的 Workspace、Preset、权限或工具路径。它只负责 QQ 群分流、发送者元数据、顺序提交和回复投递。
+插件不安装 DSH、不读取知识库文件，也不接管 DSH 的 Workspace、Preset、权限或工具路径。它只负责 QQ 会话分流、发送者元数据、顺序提交和回复投递。
 
 ## 行为
 
-- 仅处理 `aiocqhttp`、QQ 官方机器人和 QQ 官方 Webhook 的群消息。
-- 群 ID 必须出现在 `group_whitelist`。
+- 仅处理 `aiocqhttp`、QQ 官方机器人和 QQ 官方 Webhook 的群聊或好友私聊消息。
+- 群 ID 必须出现在 `group_whitelist`；好友 QQ ID 必须出现在 `user_whitelist`。
 - 消息链必须含有直接指向当前机器人的 `At` 段；普通群消息、唤醒词和 `@其他人` 不触发。
+- 白名单好友私聊无需 @，但必须使用字面量 `/cac <问题>`；普通私聊、`cac <问题>` 和其他命令不触发。
+- 群聊中的 `@机器人 /其他命令` 会放行给已有命令插件，不会被 NOVA QA 接管。
 - 每个 `bot_id + group_id` 对应一个稳定的 DSH Session，同群上下文连续，不同群完全分开。
+- 每个 `bot_id + sender_id` 对应另一个 `qq-private` Session；好友私聊不会与任何群聊共享上下文。
 - 同一 Session 的消息按 FIFO 顺序提交，上一轮结束后才提交下一轮。
 - DSH 必须只注册一个名为 `NOVA知识库` 的 Workspace，新 Session 必须解析为 `nova-qa` Preset，否则插件拒绝工作。
-- DSH 失败或超时时，群内只收到简短的暂不可用提示，详细错误留在 AstrBot 日志。
+- DSH 失败或超时时，原会话只收到简短的暂不可用提示，详细错误留在 AstrBot 日志。
 
 ## 要求
 
@@ -41,11 +44,12 @@ AstrBot 会读取 `metadata.yaml` 并自动安装 `requirements.txt` 中的 `htt
 | --- | --- | --- |
 | `dsh_base_url` | 空 | 优先使用控制台值；留空读取 `DSH_BASE_URL`；仍为空则使用 `http://127.0.0.1:3081` |
 | `group_whitelist` | `[]` | 允许触发的 QQ 群 ID。QQ 官方机器人填写事件提供的 `group_openid` |
+| `user_whitelist` | `[]` | 允许通过私聊 `/cac <问题>` 触发的 QQ 用户 ID；QQ 官方机器人填写发送者 `openid` |
 | `request_timeout_seconds` | `15` | 单次 DSH HTTP RPC 的网络超时 |
 | `response_timeout_seconds` | `180` | 等待一轮 DSH 回答完成的总时限 |
 | `poll_interval_seconds` | `0.5` | 查询 Session 历史的间隔 |
 
-`group_whitelist` 为空时插件不会处理任何群。DSH 地址也可以在 AstrBot 进程环境中设置：
+两个白名单都为空时插件不会处理任何消息。DSH 地址也可以在 AstrBot 进程环境中设置：
 
 ```bash
 export DSH_BASE_URL=http://127.0.0.1:3081
@@ -74,10 +78,29 @@ export DSH_BASE_URL=http://127.0.0.1:3081
 
 第二个 block 才是用户在 `@机器人` 后发送的原始文本。`nova-qa` Persona 使用稳定的 `sender_id` 区分参与者，用 `sender_name` 称呼对方；插件不会把用户 ID 直接写进群回复。
 
+好友私聊使用相同的两块结构，但第一块标签是 `private_message_metadata`，来源字段为：
+
+```json
+{
+  "source_type": "qq_private",
+  "platform": "aiocqhttp",
+  "platform_id": "qq-main",
+  "bot_id": "机器人账号",
+  "peer_id": "发送用户 ID",
+  "message_id": "原消息 ID",
+  "timestamp": 1787011200,
+  "sender_id": "发送用户 ID",
+  "sender_name": "发送用户昵称",
+  "trigger": "slash_cac"
+}
+```
+
+第二块只包含去掉 `/cac` 后的原始问题。群聊和私聊 Session ID 分别以 `qq-group-`、`qq-private-` 开头，避免上下文混合。
+
 ## DSH 调用流程
 
 1. `workspace.list` 验证唯一的 `NOVA知识库`。
-2. `session.create` 用稳定 Session ID 幂等创建或恢复群会话，并验证 `agentPreset: nova-qa`。
+2. `session.create` 用稳定 Session ID 幂等创建或恢复群聊/私聊会话，并验证 `agentPreset: nova-qa`。
 3. `session.history` 记录提交前的最后序号。
 4. `session.prompt` 提交来源元数据和用户问题。
 5. 轮询 `session.history`，等待新的 `turn/end: completed`，提取该边界内最后一条 `assistant/message` 文本。

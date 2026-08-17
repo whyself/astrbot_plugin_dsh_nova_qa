@@ -110,8 +110,9 @@ https://github.com/whyself/astrbot_plugin_dsh_nova_qa
 
 1. `dsh_base_url`：同机非容器可留空；其他私有网络填写内部 DSH URL。
 2. `group_whitelist`：逐项填写允许使用的群 ID；QQ 官方机器人填写 `group_openid`。
-3. 保持 `request_timeout_seconds=15`、`response_timeout_seconds=180`、`poll_interval_seconds=0.5`，除非服务器日志表明需要调整。
-4. 保存并重载插件。
+3. `user_whitelist`：逐项填写允许通过好友私聊 `/cac <问题>` 使用知识库的 QQ 用户 ID。
+4. 保持 `request_timeout_seconds=15`、`response_timeout_seconds=180`、`poll_interval_seconds=0.5`，除非服务器日志表明需要调整。
+5. 保存并重载插件。
 
 ## 7. 端到端验收
 
@@ -126,7 +127,10 @@ https://github.com/whyself/astrbot_plugin_dsh_nova_qa
 - 机器人只回复一次。
 - 同群追问能记住上一轮；另一白名单群不会继承这个上下文。
 - 非白名单群、未 @机器人、只 @其他人的消息没有响应。
+- 群聊 `@机器人 /其他命令` 仍由原命令插件处理。
 - DSH Web 中出现形如 `qq-group-<bot_id>-<group_id>` 的 Session，Preset 是 `nova-qa`。
+- 白名单好友私聊 `/cac NOVA 是什么？` 能回答，普通私聊和非白名单好友 `/cac` 不触发。
+- 好友私聊创建 `qq-private-<bot_id>-<sender_id>` Session，并且不继承群聊上下文。
 - AstrBot 日志没有 DSH transport/protocol 错误，DSH 日志以 `turn/end: completed` 结束。
 
 ## 8. 运行与备份

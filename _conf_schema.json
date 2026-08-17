@@ -14,6 +14,15 @@
       "type": "string"
     }
   },
+  "user_whitelist": {
+    "type": "list",
+    "description": "允许私聊使用 NOVA 知识库的 QQ 用户 ID",
+    "default": [],
+    "hint": "每项填写一个 QQ 用户 ID；QQ 官方机器人填写发送者 openid。只有白名单好友私聊发送字面量 /cac <问题> 才会触发；普通私聊不会被本插件接管。",
+    "items": {
+      "type": "string"
+    }
+  },
   "request_timeout_seconds": {
     "type": "int",
     "description": "单次 DSH RPC 网络超时（秒）",
