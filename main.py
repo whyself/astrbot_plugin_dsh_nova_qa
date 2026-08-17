@@ -25,6 +25,7 @@ from .routing import (
 )
 
 SUPPORTED_QQ_PLATFORMS = frozenset({"aiocqhttp", "qq_official", "qq_official_webhook"})
+GROUP_HANDLER_PRIORITY = 50
 
 
 def _config_number(config: AstrBotConfig, key: str, default: float) -> float:
@@ -59,7 +60,7 @@ def _message_timestamp(event: AstrMessageEvent) -> int:
     "astrbot_plugin_dsh_nova_qa",
     "whyself",
     "把白名单 QQ 群 @提问及白名单好友 /cac 私聊转发给 DSH NOVA 知识库",
-    "1.1.0",
+    "1.1.1",
 )
 class DshNovaQaPlugin(Star):
     """Route each allowlisted QQ group or friend to a stable NOVA QA Session."""
@@ -93,7 +94,10 @@ class DshNovaQaPlugin(Star):
             len(self.user_whitelist),
         )
 
-    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    @filter.event_message_type(
+        filter.EventMessageType.GROUP_MESSAGE,
+        priority=GROUP_HANDLER_PRIORITY,
+    )
     async def on_group_message(self, event: AstrMessageEvent):
         """Answer direct bot mentions from configured QQ groups."""
 

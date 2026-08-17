@@ -216,6 +216,24 @@ async def dispatch_private(
     return results
 
 
+async def dispatch_group(
+    handlers: list,
+    event: FakeEvent,
+    group_message_type: object,
+) -> list[str]:
+    results: list[str] = []
+    ordered = sorted(
+        handlers,
+        key=lambda handler: -int(handler_attribute(handler, "_fake_priority", 0)),
+    )
+    for handler in ordered:
+        if event.stopped:
+            break
+        if handler_attribute(handler, "_fake_message_type") is group_message_type:
+            results.extend(await collect(handler(event)))
+    return results
+
+
 def make_plugin(module):
     return module.DshNovaQaPlugin(
         object(),
@@ -327,3 +345,32 @@ async def test_group_slash_command_is_released_to_existing_plugins(plugin_module
     assert await collect(plugin.on_group_message(event)) == []
     assert not event.stopped
     assert plugin.dsh.calls == []
+
+
+@pytest.mark.asyncio
+async def test_group_priority_claims_allowlisted_mention_before_generic_handler(
+    plugin_module,
+) -> None:
+    plugin = make_plugin(plugin_module)
+    event = FakeEvent(
+        sender_id="42",
+        text="NOVA 是什么？",
+        private=False,
+        group_id="9",
+    )
+    group_message_type = plugin_module.filter.EventMessageType.GROUP_MESSAGE
+
+    async def generic_at_handler(generic_event: FakeEvent):
+        generic_event.stop_event()
+        yield "generic answer"
+
+    generic_at_handler._fake_message_type = group_message_type
+    generic_at_handler._fake_priority = 0
+
+    assert handler_attribute(plugin.on_group_message, "_fake_priority") == 50
+    assert await dispatch_group(
+        [generic_at_handler, plugin.on_group_message],
+        event,
+        group_message_type,
+    ) == ["DSH answer"]
+    assert plugin.dsh.calls[0][0] == "qq-group-7-9"
