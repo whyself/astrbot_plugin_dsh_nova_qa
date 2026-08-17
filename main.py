@@ -70,7 +70,7 @@ def _message_timestamp(event: AstrMessageEvent) -> int:
     "astrbot_plugin_dsh_nova_qa",
     "whyself",
     "把白名单 QQ 群 @提问及白名单好友 /cac 私聊转发给 DSH NOVA 知识库",
-    "1.2.0",
+    "1.2.1",
 )
 class DshNovaQaPlugin(Star):
     """Route each allowlisted QQ group or friend to a stable NOVA QA Session."""
@@ -114,7 +114,18 @@ class DshNovaQaPlugin(Star):
         """Build a group response quoting the triggering message."""
 
         message_id = str(getattr(event.message_obj, "message_id", ""))
-        return event.chain_result([Reply(id=message_id), Plain(text)])
+        reply = Reply(
+            id=message_id,
+            chain=None,
+            sender_id=None,
+            sender_nickname=None,
+            time=None,
+            message_str=None,
+            text=None,
+            qq=None,
+            seq=None,
+        )
+        return event.chain_result([reply, Plain(text)])
 
     @filter.event_message_type(
         filter.EventMessageType.GROUP_MESSAGE,

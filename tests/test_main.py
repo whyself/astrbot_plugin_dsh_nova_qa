@@ -22,8 +22,32 @@ class FakePlain:
 
 
 class FakeReply:
-    def __init__(self, *, id: str) -> None:
+    def __init__(
+        self,
+        *,
+        id: str,
+        chain: list[object] | None,
+        sender_id: int | str | None,
+        sender_nickname: str | None,
+        time: int | None,
+        message_str: str | None,
+        text: str | None,
+        qq: int | None,
+        seq: int | None,
+    ) -> None:
         self.id = id
+        self.chain = chain
+        self.sender_id = sender_id
+        self.sender_nickname = sender_nickname
+        self.time = time
+        self.message_str = message_str
+        self.text = text
+        self.qq = qq
+        self.seq = seq
+
+    def to_onebot_dict(self) -> dict[str, object]:
+        data = {key: value for key, value in vars(self).items() if value is not None}
+        return {"type": "reply", "data": data}
 
 
 class FakeDshClient:
@@ -266,6 +290,11 @@ def assert_group_reply(results: list[object], message_id: str, text: str) -> Non
     reply, plain = chain
     assert isinstance(reply, FakeReply)
     assert reply.id == message_id
+    assert reply.chain is None
+    assert reply.to_onebot_dict() == {
+        "type": "reply",
+        "data": {"id": message_id},
+    }
     assert isinstance(plain, FakePlain)
     assert plain.text == text
 
