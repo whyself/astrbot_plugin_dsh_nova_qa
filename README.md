@@ -16,6 +16,7 @@
 - 白名单好友私聊无需 @，但必须使用字面量 `/cac <问题>`；普通私聊、`cac <问题>` 和其他命令不触发。
 - 群聊中的 `@机器人 /其他命令` 会放行给已有命令插件，不会被 NOVA QA 接管。
 - 满足白名单及群触发条件的消息会先于普通优先级的通用问答处理器接管，避免其他插件拒绝该群后提前停止事件传播。
+- 白名单群消息在已有插件完成处理后会被标记为不再调用 AstrBot 核心默认 LLM；没有显式 `@机器人` 的引用消息因此不会产生默认模型回答。
 - 每个 `bot_id + group_id` 对应一个稳定的 DSH Session，同群上下文连续，不同群完全分开。
 - 每个 `bot_id + sender_id` 对应另一个 `qq-private` Session；好友私聊不会与任何群聊共享上下文。
 - 同一 Session 的消息严格按 FIFO 顺序逐条处理和回复，上一轮结束后才处理下一条；不同 Session 仍可并发。
@@ -26,7 +27,7 @@
 
 ## 要求
 
-- AstrBot `>=4.17,<5`，已配置一个受支持的 QQ 平台适配器
+- AstrBot `>=4.24.1,<5`，已配置一个受支持的 QQ 平台适配器
 - Python 3.10+
 - 可访问的 DeepSeek Harness Web RPC
 - 已安装 [NOVA Knowledge QA Bundle](https://github.com/whyself/dsh-knowledge-qa-plugin)

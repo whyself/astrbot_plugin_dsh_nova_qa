@@ -92,6 +92,7 @@ class FakeEvent:
         self.bot_id = bot_id
         self.platform = platform
         self.stopped = False
+        self.call_llm = False
         message = messages if messages is not None else [FakePlain(text)]
         if messages is None and not private:
             message.insert(0, FakeAt(bot_id, "Novabot"))
@@ -127,6 +128,9 @@ class FakeEvent:
 
     def stop_event(self) -> None:
         self.stopped = True
+
+    def should_call_llm(self, call_llm: bool) -> None:
+        self.call_llm = call_llm
 
     def plain_result(self, text: str) -> str:
         return text
@@ -267,8 +271,16 @@ async def dispatch_group(
         if event.stopped:
             break
         if handler_attribute(handler, "_fake_message_type") is group_message_type:
-            results.extend(await collect(handler(event)))
+            invocation = handler(event)
+            if hasattr(invocation, "__aiter__"):
+                results.extend(await collect(invocation))
+            else:
+                await invocation
     return results
+
+
+def core_default_llm(event: FakeEvent) -> list[str]:
+    return [] if event.call_llm else ["default answer"]
 
 
 def make_plugin(module, **overrides: object):
@@ -401,6 +413,89 @@ async def test_group_slash_command_is_released_to_existing_plugins(plugin_module
     assert await collect(plugin.on_group_message(event)) == []
     assert not event.stopped
     assert plugin.dsh.calls == []
+
+
+@pytest.mark.asyncio
+async def test_allowlisted_group_tail_guard_blocks_core_default_llm(
+    plugin_module,
+) -> None:
+    plugin = make_plugin(plugin_module)
+    event = FakeEvent(
+        sender_id="42",
+        text="普通群消息",
+        private=False,
+        group_id="9",
+        messages=[FakePlain("普通群消息")],
+    )
+    group_message_type = plugin_module.filter.EventMessageType.GROUP_MESSAGE
+
+    results = await dispatch_group(
+        [
+            plugin.suppress_allowlisted_group_default_llm,
+            plugin.on_group_message,
+        ],
+        event,
+        group_message_type,
+    )
+
+    assert results == []
+    assert core_default_llm(event) == []
+    assert not event.stopped
+    assert plugin.dsh.calls == []
+
+
+@pytest.mark.asyncio
+async def test_allowlisted_group_tail_guard_runs_after_regular_plugins(
+    plugin_module,
+) -> None:
+    plugin = make_plugin(plugin_module)
+    event = FakeEvent(
+        sender_id="42",
+        text="插件消息",
+        private=False,
+        group_id="9",
+        messages=[FakePlain("插件消息")],
+    )
+    group_message_type = plugin_module.filter.EventMessageType.GROUP_MESSAGE
+
+    async def regular_plugin(_event: FakeEvent):
+        yield "plugin answer"
+
+    regular_plugin._fake_message_type = group_message_type
+    regular_plugin._fake_priority = 0
+
+    results = await dispatch_group(
+        [plugin.suppress_allowlisted_group_default_llm, regular_plugin],
+        event,
+        group_message_type,
+    )
+
+    assert results == ["plugin answer"]
+    assert core_default_llm(event) == []
+    assert not event.stopped
+
+
+@pytest.mark.asyncio
+async def test_group_tail_guard_releases_non_allowlisted_groups(plugin_module) -> None:
+    plugin = make_plugin(plugin_module)
+    event = FakeEvent(
+        sender_id="42",
+        text="其他群消息",
+        private=False,
+        group_id="10",
+        messages=[FakePlain("其他群消息")],
+    )
+    group_message_type = plugin_module.filter.EventMessageType.GROUP_MESSAGE
+
+    results = await dispatch_group(
+        [plugin.suppress_allowlisted_group_default_llm],
+        event,
+        group_message_type,
+    )
+
+    assert results == []
+    assert core_default_llm(event) == ["default answer"]
+    assert not event.stopped
 
 
 @pytest.mark.asyncio
@@ -544,7 +639,9 @@ async def test_reply_to_group_member_without_bot_mention_is_released(
 
 
 @pytest.mark.asyncio
-async def test_reply_to_bot_without_direct_mention_is_released(plugin_module) -> None:
+async def test_primary_handler_releases_reply_to_bot_without_direct_mention(
+    plugin_module,
+) -> None:
     plugin = make_plugin(plugin_module)
     event = FakeEvent(
         sender_id="42",
@@ -568,6 +665,43 @@ async def test_reply_to_bot_without_direct_mention_is_released(plugin_module) ->
 
 
 @pytest.mark.asyncio
+async def test_reply_to_bot_without_direct_mention_is_blocked_from_default_llm(
+    plugin_module,
+) -> None:
+    plugin = make_plugin(plugin_module)
+    event = FakeEvent(
+        sender_id="42",
+        text="为什么会使用 DSH？",
+        private=False,
+        group_id="9",
+        messages=[
+            FakeReply(
+                id="quoted-bot",
+                sender_id="7",
+                sender_nickname="Novabot",
+                message_str="此前的机器人回答",
+            ),
+            FakePlain("为什么会使用 DSH？"),
+        ],
+    )
+    group_message_type = plugin_module.filter.EventMessageType.GROUP_MESSAGE
+
+    results = await dispatch_group(
+        [
+            plugin.suppress_allowlisted_group_default_llm,
+            plugin.on_group_message,
+        ],
+        event,
+        group_message_type,
+    )
+
+    assert results == []
+    assert core_default_llm(event) == []
+    assert not event.stopped
+    assert plugin.dsh.calls == []
+
+
+@pytest.mark.asyncio
 async def test_group_response_quotes_the_triggering_message(plugin_module) -> None:
     plugin = make_plugin(plugin_module)
     event = FakeEvent(
@@ -581,6 +715,30 @@ async def test_group_response_quotes_the_triggering_message(plugin_module) -> No
     results = await collect(plugin.on_group_message(event))
 
     assert_group_reply(results, "question-123", "DSH answer")
+
+
+@pytest.mark.asyncio
+async def test_group_stops_propagation_only_after_yielding_its_reply(
+    plugin_module,
+) -> None:
+    plugin = make_plugin(plugin_module)
+    event = FakeEvent(
+        sender_id="42",
+        text="NOVA 是什么？",
+        private=False,
+        group_id="9",
+        message_id="question-123",
+    )
+    handler = plugin.on_group_message(event)
+
+    reply = await anext(handler)
+
+    assert_group_reply([reply], "question-123", "DSH answer")
+    assert event.call_llm
+    assert not event.stopped
+    with pytest.raises(StopAsyncIteration):
+        await anext(handler)
+    assert event.stopped
 
 
 @pytest.mark.asyncio

@@ -30,6 +30,7 @@ from .routing import (
 
 SUPPORTED_QQ_PLATFORMS = frozenset({"aiocqhttp", "qq_official", "qq_official_webhook"})
 GROUP_HANDLER_PRIORITY = 50
+GROUP_DEFAULT_LLM_GUARD_PRIORITY = -1000
 HOURLY_LIMIT_MESSAGE = "本会话每小时提问次数已达到上限，请稍后再试。"
 
 
@@ -72,7 +73,7 @@ def _message_timestamp(event: AstrMessageEvent) -> int:
     "astrbot_plugin_dsh_nova_qa",
     "whyself",
     "把白名单 QQ 群 @提问及白名单好友 /cac 私聊转发给 DSH NOVA 知识库",
-    "1.3.0",
+    "1.3.1",
 )
 class DshNovaQaPlugin(Star):
     """Route each allowlisted QQ group or friend to a stable NOVA QA Session."""
@@ -155,12 +156,13 @@ class DshNovaQaPlugin(Star):
         if is_slash_command(question):
             return
 
-        event.stop_event()
+        event.should_call_llm(True)
         session_id = build_session_id(bot_id, group_id)
         if not question:
             lock = self._session_locks.setdefault(session_id, asyncio.Lock())
             async with lock:
                 yield self._group_result(event, "请在 @机器人 后写上问题。")
+            event.stop_event()
             return
 
         message = event.message_obj
@@ -181,6 +183,7 @@ class DshNovaQaPlugin(Star):
         async with lock:
             if not self._rate_limiter.accept(session_id):
                 yield self._group_result(event, HOURLY_LIMIT_MESSAGE)
+                event.stop_event()
                 return
 
             try:
@@ -188,9 +191,27 @@ class DshNovaQaPlugin(Star):
             except DshError:
                 logger.exception("DSH NOVA QA request failed")
                 yield self._group_result(event, "知识库服务暂时不可用，请稍后再试。")
+                event.stop_event()
                 return
 
             yield self._group_result(event, answer)
+            event.stop_event()
+
+    @filter.event_message_type(
+        filter.EventMessageType.GROUP_MESSAGE,
+        priority=GROUP_DEFAULT_LLM_GUARD_PRIORITY,
+    )
+    async def suppress_allowlisted_group_default_llm(
+        self,
+        event: AstrMessageEvent,
+    ) -> None:
+        """Disable core default chat after allowlisted group plugin handlers."""
+
+        if event.get_platform_name() not in SUPPORTED_QQ_PLATFORMS:
+            return
+        group_id = str(event.get_group_id()).strip()
+        if group_id in self.group_whitelist:
+            event.should_call_llm(True)
 
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
     @filter.command("cac", priority=100)
@@ -211,12 +232,13 @@ class DshNovaQaPlugin(Star):
         if question is None:
             return
 
-        event.stop_event()
+        event.should_call_llm(True)
         session_id = build_private_session_id(bot_id, sender_id)
         if not question:
             lock = self._session_locks.setdefault(session_id, asyncio.Lock())
             async with lock:
                 yield event.plain_result("用法: /cac <问题>")
+            event.stop_event()
             return
 
         message = event.message_obj
@@ -233,6 +255,7 @@ class DshNovaQaPlugin(Star):
         async with lock:
             if not self._rate_limiter.accept(session_id):
                 yield event.plain_result(HOURLY_LIMIT_MESSAGE)
+                event.stop_event()
                 return
 
             try:
@@ -240,9 +263,11 @@ class DshNovaQaPlugin(Star):
             except DshError:
                 logger.exception("DSH NOVA QA private request failed")
                 yield event.plain_result("知识库服务暂时不可用，请稍后再试。")
+                event.stop_event()
                 return
 
             yield event.plain_result(answer)
+            event.stop_event()
 
     async def terminate(self) -> None:
         """Close outbound HTTP connections during unload or update."""
