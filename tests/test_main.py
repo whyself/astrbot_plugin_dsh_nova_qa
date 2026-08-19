@@ -12,8 +12,9 @@ import pytest
 
 
 class FakeAt:
-    def __init__(self, qq: str) -> None:
+    def __init__(self, qq: str, name: str = "") -> None:
         self.qq = qq
+        self.name = name
 
 
 class FakePlain:
@@ -26,14 +27,14 @@ class FakeReply:
         self,
         *,
         id: str,
-        chain: list[object] | None,
-        sender_id: int | str | None,
-        sender_nickname: str | None,
-        time: int | None,
-        message_str: str | None,
-        text: str | None,
-        qq: int | None,
-        seq: int | None,
+        chain: list[object] | None = None,
+        sender_id: int | str | None = None,
+        sender_nickname: str | None = None,
+        time: int | None = None,
+        message_str: str | None = None,
+        text: str | None = None,
+        qq: int | None = None,
+        seq: int | None = None,
     ) -> None:
         self.id = id
         self.chain = chain
@@ -82,6 +83,7 @@ class FakeEvent:
         bot_id: str = "7",
         platform: str = "aiocqhttp",
         message_id: str = "message-1",
+        messages: list[object] | None = None,
     ) -> None:
         self.sender_id = sender_id
         self.text = text
@@ -90,9 +92,9 @@ class FakeEvent:
         self.bot_id = bot_id
         self.platform = platform
         self.stopped = False
-        message = [FakePlain(text)]
-        if not private:
-            message.insert(0, FakeAt(bot_id))
+        message = messages if messages is not None else [FakePlain(text)]
+        if messages is None and not private:
+            message.insert(0, FakeAt(bot_id, "Novabot"))
         self.message_obj = SimpleNamespace(
             message=message,
             message_id=message_id,
@@ -429,6 +431,140 @@ async def test_group_priority_claims_allowlisted_mention_before_generic_handler(
     )
     assert_group_reply(results, "message-1", "DSH answer")
     assert plugin.dsh.calls[0][0] == "qq-group-7-9"
+
+
+@pytest.mark.asyncio
+async def test_group_metadata_keeps_mentioned_member_but_not_the_bot(
+    plugin_module,
+) -> None:
+    plugin = make_plugin(plugin_module)
+    event = FakeEvent(
+        sender_id="42",
+        text="评价一下这个人",
+        private=False,
+        group_id="9",
+        messages=[
+            FakeAt("7", "Novabot"),
+            FakePlain("评价一下这个人"),
+            FakeAt("24841951", "悉达多"),
+        ],
+    )
+
+    assert_group_reply(
+        await collect(plugin.on_group_message(event)),
+        "message-1",
+        "DSH answer",
+    )
+    session_id, metadata, question = plugin.dsh.calls[0]
+    assert session_id == "qq-group-7-9"
+    assert question == "评价一下这个人"
+    assert metadata["mentions"] == [{"user_id": "24841951", "display_name": "悉达多"}]
+    assert all(mention["user_id"] != "7" for mention in metadata["mentions"])
+
+
+@pytest.mark.asyncio
+async def test_direct_mention_with_reply_preserves_quote(
+    plugin_module,
+) -> None:
+    plugin = make_plugin(plugin_module)
+    event = FakeEvent(
+        sender_id="42",
+        text="刚才我说了什么。",
+        private=False,
+        group_id="9",
+        messages=[
+            FakeAt("7", "Novabot"),
+            FakeReply(
+                id="quoted-1",
+                sender_id="7",
+                sender_nickname="Novabot",
+                message_str="此前的机器人回答",
+            ),
+            FakePlain("刚才我说了什么。"),
+        ],
+    )
+
+    assert_group_reply(
+        await collect(plugin.on_group_message(event)),
+        "message-1",
+        "DSH answer",
+    )
+    assert event.stopped
+    assert plugin.dsh.calls == [
+        (
+            "qq-group-7-9",
+            {
+                "source_type": "qq_group",
+                "platform": "aiocqhttp",
+                "platform_id": "qq-main",
+                "bot_id": "7",
+                "group_id": "9",
+                "message_id": "message-1",
+                "timestamp": 1787011200,
+                "sender_id": "42",
+                "sender_name": "小明",
+                "trigger": "at_bot",
+                "reply_to": {
+                    "message_id": "quoted-1",
+                    "sender_id": "7",
+                    "sender_name": "Novabot",
+                    "sender_role": "assistant",
+                    "text": "此前的机器人回答",
+                },
+            },
+            "刚才我说了什么。",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reply_to_group_member_without_bot_mention_is_released(
+    plugin_module,
+) -> None:
+    plugin = make_plugin(plugin_module)
+    event = FakeEvent(
+        sender_id="42",
+        text="这句话是什么意思？",
+        private=False,
+        group_id="9",
+        messages=[
+            FakeReply(
+                id="quoted-member",
+                sender_id="99",
+                sender_nickname="小红",
+                message_str="普通群员发言",
+            ),
+            FakePlain("这句话是什么意思？"),
+        ],
+    )
+
+    assert await collect(plugin.on_group_message(event)) == []
+    assert not event.stopped
+    assert plugin.dsh.calls == []
+
+
+@pytest.mark.asyncio
+async def test_reply_to_bot_without_direct_mention_is_released(plugin_module) -> None:
+    plugin = make_plugin(plugin_module)
+    event = FakeEvent(
+        sender_id="42",
+        text="刚才我说了什么。",
+        private=False,
+        group_id="9",
+        messages=[
+            FakeReply(
+                id="quoted-bot",
+                sender_id="7",
+                sender_nickname="Novabot",
+                message_str="此前的机器人回答",
+            ),
+            FakePlain("刚才我说了什么。"),
+        ],
+    )
+
+    assert await collect(plugin.on_group_message(event)) == []
+    assert not event.stopped
+    assert plugin.dsh.calls == []
 
 
 @pytest.mark.asyncio

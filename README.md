@@ -12,10 +12,10 @@
 
 - 仅处理 `aiocqhttp`、QQ 官方机器人和 QQ 官方 Webhook 的群聊或好友私聊消息。
 - 群 ID 必须出现在 `group_whitelist`；好友 QQ ID 必须出现在 `user_whitelist`。
-- 消息链必须含有直接指向当前机器人的 `At` 段；普通群消息、唤醒词和 `@其他人` 不触发。
+- 群消息必须直接 `@机器人`；普通群消息、唤醒词、仅 `@其他人` 和没有显式 At 的回复消息不触发。
 - 白名单好友私聊无需 @，但必须使用字面量 `/cac <问题>`；普通私聊、`cac <问题>` 和其他命令不触发。
 - 群聊中的 `@机器人 /其他命令` 会放行给已有命令插件，不会被 NOVA QA 接管。
-- 满足白名单和直接 `@机器人` 条件的群消息会先于普通优先级的通用问答处理器接管，避免其他插件拒绝该群后提前停止事件传播。
+- 满足白名单及群触发条件的消息会先于普通优先级的通用问答处理器接管，避免其他插件拒绝该群后提前停止事件传播。
 - 每个 `bot_id + group_id` 对应一个稳定的 DSH Session，同群上下文连续，不同群完全分开。
 - 每个 `bot_id + sender_id` 对应另一个 `qq-private` Session；好友私聊不会与任何群聊共享上下文。
 - 同一 Session 的消息严格按 FIFO 顺序逐条处理和回复，上一轮结束后才处理下一条；不同 Session 仍可并发。
@@ -78,11 +78,24 @@ export DSH_BASE_URL=http://127.0.0.1:3081
   "timestamp": 1786975200,
   "sender_id": "发送用户 ID",
   "sender_name": "发送用户昵称",
-  "trigger": "at_bot"
+  "trigger": "at_bot",
+  "mentions": [
+    {
+      "user_id": "被 At 用户的 QQ 号",
+      "display_name": "适配器解析出的群昵称"
+    }
+  ],
+  "reply_to": {
+    "message_id": "被引用消息 ID",
+    "sender_id": "被引用消息作者 ID",
+    "sender_name": "被引用消息作者昵称",
+    "sender_role": "assistant 或 user",
+    "text": "被引用的旧消息"
+  }
 }
 ```
 
-第二个 block 才是用户在 `@机器人` 后发送的原始文本。`nova-qa` Persona 使用稳定的 `sender_id` 区分参与者，用 `sender_name` 称呼对方；插件不会把用户 ID 直接写进群回复。
+`trigger` 为 `at_bot`。`mentions` 只包含机器人之外的被 At 用户；aiocqhttp 适配器会解析其 QQ 号和群昵称，插件不会保留 `@Novabot`。`reply_to` 仅在原消息同时含 Reply 段和显式机器人 At 时出现，表示被引用的旧消息及其作者；没有显式 `@Novabot` 的回复不会触发插件。第二个 block 是当前发送者的原始文本。`nova-qa` Persona 使用稳定的 `sender_id` 区分参与者，用 `sender_name` 称呼对方；插件不会把用户 ID 直接写进群回复。
 
 好友私聊使用相同的两块结构，但第一块标签是 `private_message_metadata`，来源字段为：
 

@@ -18,7 +18,9 @@ from .routing import (
     build_private_source_metadata,
     build_session_id,
     build_source_metadata,
+    extract_mentions,
     extract_private_cac_query,
+    extract_reply_to,
     has_direct_mention,
     is_slash_command,
     normalize_group_whitelist,
@@ -70,7 +72,7 @@ def _message_timestamp(event: AstrMessageEvent) -> int:
     "astrbot_plugin_dsh_nova_qa",
     "whyself",
     "把白名单 QQ 群 @提问及白名单好友 /cac 私聊转发给 DSH NOVA 知识库",
-    "1.2.1",
+    "1.3.0",
 )
 class DshNovaQaPlugin(Star):
     """Route each allowlisted QQ group or friend to a stable NOVA QA Session."""
@@ -143,8 +145,11 @@ class DshNovaQaPlugin(Star):
         bot_id = str(event.get_self_id()).strip()
         if not bot_id or event.get_sender_id() == bot_id:
             return
-        if not has_direct_mention(event.get_messages(), bot_id, At):
+        messages = event.get_messages()
+        direct_mention = has_direct_mention(messages, bot_id, At)
+        if not direct_mention:
             return
+        reply_to = extract_reply_to(messages, bot_id, Reply)
 
         question = _raw_plain_text(event)
         if is_slash_command(question):
@@ -168,6 +173,9 @@ class DshNovaQaPlugin(Star):
             bot_id=bot_id,
             platform=event.get_platform_name(),
             platform_id=event.get_platform_id(),
+            trigger="at_bot",
+            mentions=extract_mentions(messages, bot_id, At),
+            reply_to=reply_to,
         )
         lock = self._session_locks.setdefault(session_id, asyncio.Lock())
         async with lock:

@@ -3,7 +3,9 @@ from routing import (
     build_private_source_metadata,
     build_session_id,
     build_source_metadata,
+    extract_mentions,
     extract_private_cac_query,
+    extract_reply_to,
     has_direct_mention,
     is_slash_command,
     normalize_group_whitelist,
@@ -66,6 +68,62 @@ def test_direct_mention_requires_at_component_targeting_this_bot() -> None:
     assert has_direct_mention([object(), FakeAt("7")], "7", FakeAt)
     assert not has_direct_mention([FakeAt("8")], "7", FakeAt)
     assert not has_direct_mention([object()], "7", FakeAt)
+
+
+def test_mentions_keep_other_users_and_filter_the_bot_and_everyone() -> None:
+    class FakeAt:
+        def __init__(self, qq: str, name: str | None = None) -> None:
+            self.qq = qq
+            self.name = name
+
+    assert extract_mentions(
+        [
+            FakeAt("7", "Novabot"),
+            FakeAt("24841951", "悉达多"),
+            FakeAt("99"),
+            FakeAt("all", "全体成员"),
+        ],
+        "7",
+        FakeAt,
+    ) == [
+        {"user_id": "24841951", "display_name": "悉达多"},
+        {"user_id": "99"},
+    ]
+
+
+def test_reply_metadata_identifies_bot_and_member_authors() -> None:
+    class FakeReply:
+        def __init__(self, sender_id: str, sender_name: str) -> None:
+            self.id = "quoted-1"
+            self.sender_id = sender_id
+            self.sender_nickname = sender_name
+            self.message_str = "被引用的旧消息"
+
+    assert extract_reply_to([FakeReply("7", "Novabot")], "7", FakeReply) == {
+        "message_id": "quoted-1",
+        "sender_id": "7",
+        "sender_name": "Novabot",
+        "sender_role": "assistant",
+        "text": "被引用的旧消息",
+    }
+    assert extract_reply_to([FakeReply("42", "小明")], "7", FakeReply) == {
+        "message_id": "quoted-1",
+        "sender_id": "42",
+        "sender_name": "小明",
+        "sender_role": "user",
+        "text": "被引用的旧消息",
+    }
+    assert extract_reply_to([object()], "7", FakeReply) is None
+
+
+def test_reply_metadata_does_not_invent_an_author_for_id_only_quote() -> None:
+    class FakeReply:
+        id = "quoted-1"
+        sender_id = 0
+        sender_nickname = None
+        message_str = None
+
+    assert extract_reply_to([FakeReply()], "7", FakeReply) == {"message_id": "quoted-1"}
 
 
 def test_metadata_preserves_sender_and_message_identity() -> None:

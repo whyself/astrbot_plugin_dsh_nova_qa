@@ -80,6 +80,59 @@ def has_direct_mention(messages: Iterable[object], bot_id: str, at_type: type) -
     )
 
 
+def _component_text(component: object, attribute: str) -> str:
+    value = getattr(component, attribute, "")
+    return "" if value is None else str(value).strip()
+
+
+def extract_mentions(
+    messages: Iterable[object],
+    bot_id: str,
+    at_type: type,
+) -> list[dict[str, str]]:
+    """Return non-bot QQ mentions with adapter-resolved display names."""
+
+    mentions: list[dict[str, str]] = []
+    for component in messages:
+        if not isinstance(component, at_type):
+            continue
+        user_id = _component_text(component, "qq")
+        if not user_id or user_id in {bot_id, "all"}:
+            continue
+        mention = {"user_id": user_id}
+        display_name = _component_text(component, "name")
+        if display_name:
+            mention["display_name"] = display_name
+        mentions.append(mention)
+    return mentions
+
+
+def extract_reply_to(
+    messages: Iterable[object],
+    bot_id: str,
+    reply_type: type,
+) -> dict[str, str] | None:
+    """Return structured context for the first quoted QQ message."""
+
+    reply = next(
+        (component for component in messages if isinstance(component, reply_type)),
+        None,
+    )
+    if reply is None:
+        return None
+
+    context: dict[str, str] = {
+        "message_id": _component_text(reply, "id"),
+        "sender_name": _component_text(reply, "sender_nickname"),
+        "text": _component_text(reply, "message_str"),
+    }
+    sender_id = _component_text(reply, "sender_id")
+    if sender_id and sender_id != "0":
+        context["sender_id"] = sender_id
+        context["sender_role"] = "assistant" if sender_id == bot_id else "user"
+    return {key: value for key, value in context.items() if value}
+
+
 def build_source_metadata(
     *,
     sender_id: str,
@@ -90,10 +143,13 @@ def build_source_metadata(
     bot_id: str,
     platform: str,
     platform_id: str,
+    trigger: str = "at_bot",
+    mentions: list[dict[str, str]] | None = None,
+    reply_to: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Return the stable sender and source fields passed to the NOVA Persona."""
 
-    return {
+    metadata: dict[str, Any] = {
         "source_type": "qq_group",
         "platform": platform,
         "platform_id": platform_id,
@@ -103,8 +159,13 @@ def build_source_metadata(
         "timestamp": timestamp,
         "sender_id": sender_id,
         "sender_name": sender_name,
-        "trigger": "at_bot",
+        "trigger": trigger,
     }
+    if mentions:
+        metadata["mentions"] = mentions
+    if reply_to is not None:
+        metadata["reply_to"] = reply_to
+    return metadata
 
 
 def build_private_source_metadata(
