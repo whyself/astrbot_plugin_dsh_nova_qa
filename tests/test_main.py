@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib
 import sys
 import types
@@ -20,6 +21,16 @@ class FakeAt:
 class FakePlain:
     def __init__(self, text: str) -> None:
         self.text = text
+
+
+class FakeImage:
+    def __init__(self, data: bytes = b"\x89PNG\r\n\x1a\n", *, fail: bool = False) -> None:
+        self.data = data
+        self.fail = fail
+        self.file = (
+            "invalid://unreadable" if fail else f"base64://{base64.b64encode(data).decode('ascii')}"
+        )
+        self.url = ""
 
 
 class FakeReply:
@@ -74,6 +85,8 @@ class FakeDshClient:
 
     def __init__(self, *_args: object, **_kwargs: object) -> None:
         self.calls: list[tuple[str, dict[str, Any], str]] = []
+        self.image_calls: list[list[dict[str, str]]] = []
+        self.model_name = _kwargs.get("model_name")
         self.closed = False
         self.instances.append(self)
 
@@ -82,8 +95,11 @@ class FakeDshClient:
         session_id: str,
         metadata: dict[str, Any],
         question: str,
+        *,
+        image_parts: list[dict[str, str]] | None = None,
     ) -> str:
         self.calls.append((session_id, metadata, question))
+        self.image_calls.append(image_parts or [])
         return "DSH answer"
 
     async def close(self) -> None:
@@ -207,6 +223,7 @@ def _install_astrbot_stubs() -> None:
     event.filter = Filter
     components = types.ModuleType("astrbot.api.message_components")
     components.At = FakeAt
+    components.Image = FakeImage
     components.Node = FakeNode
     components.Nodes = FakeNodes
     components.Plain = FakePlain
@@ -314,6 +331,18 @@ def make_plugin(module, **overrides: object):
         object(),
         config,
     )
+
+
+def assert_single_png_image(plugin: object) -> None:
+    assert plugin.dsh.image_calls == [
+        [
+            {
+                "type": "image",
+                "mediaType": "image/png",
+                "data": "iVBORw0KGgo=",
+            }
+        ]
+    ]
 
 
 def assert_group_reply(results: list[object], message_id: str, text: str) -> None:
@@ -682,6 +711,119 @@ async def test_direct_mention_with_reply_preserves_quote(
 
 
 @pytest.mark.asyncio
+async def test_group_direct_image_is_forwarded_with_question(plugin_module) -> None:
+    plugin = make_plugin(plugin_module)
+    event = FakeEvent(
+        sender_id="42",
+        text="图里是什么？",
+        private=False,
+        group_id="9",
+        messages=[FakeImage(), FakeAt("7", "Novabot"), FakePlain("图里是什么？")],
+    )
+
+    assert_group_reply(
+        await collect(plugin.on_group_message(event)),
+        "message-1",
+        "DSH answer",
+    )
+    assert plugin.dsh.calls[0][2] == "图里是什么？"
+    assert_single_png_image(plugin)
+
+
+@pytest.mark.asyncio
+async def test_group_quoted_image_is_forwarded_with_direct_mention(plugin_module) -> None:
+    plugin = make_plugin(plugin_module)
+    event = FakeEvent(
+        sender_id="42",
+        text="解释这张图",
+        private=False,
+        group_id="9",
+        messages=[
+            FakeReply(id="quoted-image", chain=[FakeImage()], sender_id="99"),
+            FakeAt("7", "Novabot"),
+            FakePlain("解释这张图"),
+        ],
+    )
+
+    assert_group_reply(
+        await collect(plugin.on_group_message(event)),
+        "message-1",
+        "DSH answer",
+    )
+    assert_single_png_image(plugin)
+
+
+@pytest.mark.asyncio
+async def test_group_image_without_text_uses_default_visual_question(plugin_module) -> None:
+    plugin = make_plugin(plugin_module)
+    event = FakeEvent(
+        sender_id="42",
+        text="",
+        private=False,
+        group_id="9",
+        messages=[FakeImage(), FakeAt("7", "Novabot")],
+    )
+
+    assert_group_reply(
+        await collect(plugin.on_group_message(event)),
+        "message-1",
+        "DSH answer",
+    )
+    assert plugin.dsh.calls[0][2] == "请描述并分析这张图片。"
+    assert_single_png_image(plugin)
+
+
+@pytest.mark.asyncio
+async def test_unaddressed_group_image_is_not_forwarded_or_cached(plugin_module) -> None:
+    plugin = make_plugin(plugin_module)
+    event = FakeEvent(
+        sender_id="42",
+        text="群里的普通图片",
+        private=False,
+        group_id="9",
+        messages=[FakeImage(), FakePlain("群里的普通图片")],
+    )
+
+    assert await collect(plugin.on_group_message(event)) == []
+    assert plugin.dsh.calls == []
+    assert plugin.dsh.image_calls == []
+
+
+@pytest.mark.asyncio
+async def test_private_image_without_text_uses_default_visual_question(plugin_module) -> None:
+    plugin = make_plugin(plugin_module)
+    event = FakeEvent(
+        sender_id="42",
+        text="/cac",
+        private=True,
+        messages=[FakePlain("/cac"), FakeImage()],
+    )
+
+    assert await collect(plugin.on_private_cac(event)) == ["DSH answer"]
+    assert plugin.dsh.calls[0][2] == "请描述并分析这张图片。"
+    assert_single_png_image(plugin)
+
+
+@pytest.mark.asyncio
+async def test_unreadable_group_image_returns_specific_error(plugin_module) -> None:
+    plugin = make_plugin(plugin_module)
+    event = FakeEvent(
+        sender_id="42",
+        text="看图",
+        private=False,
+        group_id="9",
+        messages=[FakeAt("7", "Novabot"), FakeImage(fail=True), FakePlain("看图")],
+    )
+
+    assert_group_reply(
+        await collect(plugin.on_group_message(event)),
+        "message-1",
+        "图片无法处理，请检查数量、大小或格式后重试。",
+    )
+    assert plugin.dsh.calls == []
+
+
+@pytest.mark.asyncio
 async def test_reply_to_group_member_without_bot_mention_is_released(
     plugin_module,
 ) -> None:
@@ -921,6 +1063,10 @@ async def test_group_dsh_error_quotes_the_triggering_message(plugin_module) -> N
         ("fold_long_responses", "true"),
         ("fold_response_threshold", -1),
         ("fold_response_threshold", True),
+        ("max_images_per_message", 0),
+        ("max_image_bytes", 0),
+        ("max_total_image_bytes", 0),
+        ("image_conversion_timeout_seconds", 0),
     ],
 )
 def test_fold_configuration_rejects_invalid_values(
@@ -930,6 +1076,14 @@ def test_fold_configuration_rejects_invalid_values(
 ) -> None:
     with pytest.raises(ValueError):
         make_plugin(plugin_module, **{key: value})
+
+
+def test_dsh_model_name_is_configurable_and_nonempty(plugin_module) -> None:
+    plugin = make_plugin(plugin_module, dsh_model_name="custom-vision-model")
+    assert plugin.dsh.model_name == "custom-vision-model"
+
+    with pytest.raises(ValueError, match="dsh_model_name"):
+        make_plugin(plugin_module, dsh_model_name="   ")
 
 
 @pytest.mark.asyncio

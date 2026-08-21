@@ -8,10 +8,19 @@ from typing import Any
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import At, Node, Nodes, Plain, Reply
+from astrbot.api.message_components import At, Image, Node, Nodes, Plain, Reply
 from astrbot.api.star import Context, Star, register
 
-from .dsh_client import DshClient, DshError
+from .dsh_client import DEFAULT_MODEL_NAME, DshClient, DshError
+from .image_input import (
+    DEFAULT_CONVERSION_TIMEOUT_SECONDS,
+    DEFAULT_MAX_IMAGE_BYTES,
+    DEFAULT_MAX_IMAGES,
+    DEFAULT_MAX_TOTAL_IMAGE_BYTES,
+    ImageInputError,
+    extract_image_parts,
+    has_image_input,
+)
 from .rate_limit import SessionHourlyLimiter
 from .routing import (
     build_private_session_id,
@@ -33,6 +42,8 @@ GROUP_HANDLER_PRIORITY = 50
 GROUP_DEFAULT_LLM_GUARD_PRIORITY = -1000
 HOURLY_LIMIT_MESSAGE = "本会话每小时提问次数已达到上限，请稍后再试。"
 FORWARD_SENDER_NAME = "NovaBot"
+DEFAULT_IMAGE_QUESTION = "请描述并分析这张图片。"
+IMAGE_INPUT_ERROR_MESSAGE = "图片无法处理，请检查数量、大小或格式后重试。"
 
 
 def _config_number(config: AstrBotConfig, key: str, default: float) -> float:
@@ -49,11 +60,32 @@ def _config_nonnegative_int(config: AstrBotConfig, key: str, default: int) -> in
     return value
 
 
+def _config_positive_int(config: AstrBotConfig, key: str, default: int) -> int:
+    value = _config_nonnegative_int(config, key, default)
+    if value == 0:
+        raise ValueError(f"{key} must be a positive integer")
+    return value
+
+
+def _config_positive_number(config: AstrBotConfig, key: str, default: float) -> float:
+    value = _config_number(config, key, default)
+    if value <= 0:
+        raise ValueError(f"{key} must be positive")
+    return value
+
+
 def _config_bool(config: AstrBotConfig, key: str, default: bool) -> bool:
     value: Any = config.get(key, default)
     if not isinstance(value, bool):
         raise ValueError(f"{key} must be a boolean")
     return value
+
+
+def _config_nonempty_string(config: AstrBotConfig, key: str, default: str) -> str:
+    value: Any = config.get(key, default)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{key} must be a non-empty string")
+    return value.strip()
 
 
 def _raw_plain_text(event: AstrMessageEvent) -> str:
@@ -80,8 +112,8 @@ def _message_timestamp(event: AstrMessageEvent) -> int:
 @register(
     "astrbot_plugin_dsh_nova_qa",
     "whyself",
-    "把白名单 QQ 群 @提问及白名单好友 /cac 私聊转发给 DSH NOVA 知识库",
-    "1.4.0",
+    "把白名单 QQ 群 @图文提问及白名单好友 /cac 图文私聊转发给 DSH NOVA 知识库",
+    "1.5.0",
 )
 class DshNovaQaPlugin(Star):
     """Route each allowlisted QQ group or friend to a stable NOVA QA Session."""
@@ -98,11 +130,17 @@ class DshNovaQaPlugin(Star):
         self.group_whitelist = normalize_group_whitelist(raw_groups)
         self.user_whitelist = normalize_user_whitelist(raw_users)
         self.dsh_base_url = resolve_base_url(str(config.get("dsh_base_url", "")), os.environ)
+        self.dsh_model_name = _config_nonempty_string(
+            config,
+            "dsh_model_name",
+            DEFAULT_MODEL_NAME,
+        )
         self.dsh = DshClient(
             self.dsh_base_url,
             request_timeout_seconds=_config_number(config, "request_timeout_seconds", 15),
             response_timeout_seconds=_config_number(config, "response_timeout_seconds", 180),
             poll_interval_seconds=_config_number(config, "poll_interval_seconds", 0.5),
+            model_name=self.dsh_model_name,
         )
         self.session_hourly_limit = _config_nonnegative_int(config, "session_hourly_limit", 20)
         self.fold_long_responses = _config_bool(config, "fold_long_responses", True)
@@ -110,6 +148,26 @@ class DshNovaQaPlugin(Star):
             config,
             "fold_response_threshold",
             800,
+        )
+        self.max_images_per_message = _config_positive_int(
+            config,
+            "max_images_per_message",
+            DEFAULT_MAX_IMAGES,
+        )
+        self.max_image_bytes = _config_positive_int(
+            config,
+            "max_image_bytes",
+            DEFAULT_MAX_IMAGE_BYTES,
+        )
+        self.max_total_image_bytes = _config_positive_int(
+            config,
+            "max_total_image_bytes",
+            DEFAULT_MAX_TOTAL_IMAGE_BYTES,
+        )
+        self.image_conversion_timeout_seconds = _config_positive_number(
+            config,
+            "image_conversion_timeout_seconds",
+            DEFAULT_CONVERSION_TIMEOUT_SECONDS,
         )
         self._rate_limiter = SessionHourlyLimiter(self.session_hourly_limit)
         self._session_locks: dict[str, asyncio.Lock] = {}
@@ -120,13 +178,20 @@ class DshNovaQaPlugin(Star):
         logger.info(
             "DSH NOVA QA plugin loaded: endpoint=%s, allowlisted_groups=%d, "
             "allowlisted_users=%d, session_hourly_limit=%d, "
-            "fold_long_responses=%s, fold_response_threshold=%d",
+            "fold_long_responses=%s, fold_response_threshold=%d, model=%s, "
+            "max_images_per_message=%d, max_image_bytes=%d, "
+            "max_total_image_bytes=%d, image_conversion_timeout_seconds=%g",
             self.dsh_base_url,
             len(self.group_whitelist),
             len(self.user_whitelist),
             self.session_hourly_limit,
             self.fold_long_responses,
             self.fold_response_threshold,
+            self.dsh_model_name,
+            self.max_images_per_message,
+            self.max_image_bytes,
+            self.max_total_image_bytes,
+            self.image_conversion_timeout_seconds,
         )
 
     @staticmethod
@@ -166,6 +231,33 @@ class DshNovaQaPlugin(Star):
             return self._group_result(event, text)
         return event.plain_result(text)
 
+    async def _ask(
+        self,
+        session_id: str,
+        metadata: dict[str, Any],
+        question: str,
+        messages: list[object],
+    ) -> str:
+        """Forward text plus direct or quoted images to one DSH Session."""
+
+        image_parts = await extract_image_parts(
+            messages,
+            Image,
+            Reply,
+            max_images=self.max_images_per_message,
+            max_image_bytes=self.max_image_bytes,
+            max_total_image_bytes=self.max_total_image_bytes,
+            timeout_seconds=self.image_conversion_timeout_seconds,
+        )
+        if image_parts:
+            return await self.dsh.ask(
+                session_id,
+                metadata,
+                question,
+                image_parts=image_parts,
+            )
+        return await self.dsh.ask(session_id, metadata, question)
+
     @filter.event_message_type(
         filter.EventMessageType.GROUP_MESSAGE,
         priority=GROUP_HANDLER_PRIORITY,
@@ -191,6 +283,9 @@ class DshNovaQaPlugin(Star):
         question = _raw_plain_text(event)
         if is_slash_command(question):
             return
+        has_images = has_image_input(messages, Image, Reply)
+        if not question and has_images:
+            question = DEFAULT_IMAGE_QUESTION
 
         event.should_call_llm(True)
         session_id = build_session_id(bot_id, group_id)
@@ -223,7 +318,12 @@ class DshNovaQaPlugin(Star):
                 return
 
             try:
-                answer = await self.dsh.ask(session_id, metadata, question)
+                answer = await self._ask(session_id, metadata, question, messages)
+            except ImageInputError:
+                logger.exception("DSH NOVA QA image input failed")
+                yield self._group_result(event, IMAGE_INPUT_ERROR_MESSAGE)
+                event.stop_event()
+                return
             except DshError:
                 logger.exception("DSH NOVA QA request failed")
                 yield self._group_result(event, "知识库服务暂时不可用，请稍后再试。")
@@ -267,6 +367,10 @@ class DshNovaQaPlugin(Star):
         question = extract_private_cac_query(_raw_plain_text(event))
         if question is None:
             return
+        messages = event.get_messages()
+        has_images = has_image_input(messages, Image, Reply)
+        if not question and has_images:
+            question = DEFAULT_IMAGE_QUESTION
 
         event.should_call_llm(True)
         session_id = build_private_session_id(bot_id, sender_id)
@@ -295,7 +399,12 @@ class DshNovaQaPlugin(Star):
                 return
 
             try:
-                answer = await self.dsh.ask(session_id, metadata, question)
+                answer = await self._ask(session_id, metadata, question, messages)
+            except ImageInputError:
+                logger.exception("DSH NOVA QA private image input failed")
+                yield event.plain_result(IMAGE_INPUT_ERROR_MESSAGE)
+                event.stop_event()
+                return
             except DshError:
                 logger.exception("DSH NOVA QA private request failed")
                 yield event.plain_result("知识库服务暂时不可用，请稍后再试。")

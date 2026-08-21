@@ -11,6 +11,8 @@ import httpx
 
 EXPECTED_PRESET = "nova-qa"
 EXPECTED_WORKSPACE_TITLE = "NOVA知识库"
+DEFAULT_MODEL_PROVIDER = "deepseek-official"
+DEFAULT_MODEL_NAME = "deepseek-v4-flash-vision-exp"
 
 
 class DshError(RuntimeError):
@@ -70,6 +72,7 @@ class DshClient:
         request_timeout_seconds: float,
         response_timeout_seconds: float,
         poll_interval_seconds: float,
+        model_name: str = DEFAULT_MODEL_NAME,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         if request_timeout_seconds <= 0:
@@ -78,10 +81,13 @@ class DshClient:
             raise ValueError("response_timeout_seconds must be positive")
         if poll_interval_seconds < 0:
             raise ValueError("poll_interval_seconds cannot be negative")
+        if not model_name.strip():
+            raise ValueError("model_name must be a non-empty string")
 
         self.base_url = base_url.rstrip("/")
         self.response_timeout_seconds = response_timeout_seconds
         self.poll_interval_seconds = poll_interval_seconds
+        self.model_name = model_name.strip()
         self._http = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=httpx.Timeout(request_timeout_seconds),
@@ -170,12 +176,37 @@ class DshClient:
             raise DshConfigurationError(
                 f"expected Session Preset {EXPECTED_PRESET}, got {value.get('agentPreset')!r}"
             )
+        await self.select_model(session_id)
+
+    async def select_model(self, session_id: str) -> None:
+        """Select the configured direct DeepSeek model for this QQ Session."""
+
+        value = await self.rpc(
+            "session.selectModel",
+            {
+                "sessionId": session_id,
+                "provider": DEFAULT_MODEL_PROVIDER,
+                "model": self.model_name,
+            },
+        )
+        selected = value.get("selected")
+        if not isinstance(selected, dict):
+            raise DshProtocolError("session.selectModel returned an invalid selection")
+        if (
+            selected.get("provider") != DEFAULT_MODEL_PROVIDER
+            or selected.get("model") != self.model_name
+        ):
+            raise DshConfigurationError(
+                "DSH selected a different model than the configured NOVA model"
+            )
 
     async def ask(
         self,
         session_id: str,
         source_metadata: dict[str, Any],
         question: str,
+        *,
+        image_parts: list[dict[str, str]] | None = None,
     ) -> str:
         """Queue one routed QQ message and wait for the Session's completed answer."""
 
@@ -195,18 +226,20 @@ class DshClient:
                 if source_metadata.get("source_type") == "qq_private"
                 else "group_message_metadata"
             )
+            content: list[dict[str, str]] = [
+                {
+                    "type": "text",
+                    "text": (f"<{metadata_tag}>\n{metadata_json}\n</{metadata_tag}>"),
+                },
+                {"type": "text", "text": question},
+            ]
+            content.extend(dict(part) for part in (image_parts or []))
             await self.rpc(
                 "session.prompt",
                 {
                     "sessionId": session_id,
                     "mode": "queue",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": (f"<{metadata_tag}>\n{metadata_json}\n</{metadata_tag}>"),
-                        },
-                        {"type": "text", "text": question},
-                    ],
+                    "content": content,
                 },
             )
             return await self._wait_for_answer(session_id, baseline_seq)

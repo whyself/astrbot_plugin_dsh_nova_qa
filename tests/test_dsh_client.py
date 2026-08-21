@@ -62,10 +62,11 @@ async def test_ask_creates_fixed_session_and_returns_completed_answer(
 ) -> None:
     methods: list[str] = []
     prompt_payload: dict[str, Any] = {}
+    select_payload: dict[str, Any] = {}
     history_calls = 0
 
     async def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal history_calls, prompt_payload
+        nonlocal history_calls, prompt_payload, select_payload
         body = json.loads(request.content)
         method = body["method"]
         methods.append(method)
@@ -94,6 +95,17 @@ async def test_ask_creates_fixed_session_and_returns_completed_answer(
             return rpc_response(
                 request,
                 {"sessionId": session_id, "agentPreset": "nova-qa"},
+            )
+        if method == "session.selectModel":
+            select_payload = body["payload"]
+            return rpc_response(
+                request,
+                {
+                    "selected": {
+                        "provider": "deepseek-official",
+                        "model": "deepseek-v4-flash-vision-exp",
+                    }
+                },
             )
         if method == "session.history":
             history_calls += 1
@@ -172,7 +184,18 @@ async def test_ask_creates_fixed_session_and_returns_completed_answer(
         transport=httpx.MockTransport(handler),
     )
     try:
-        answer = await client.ask(session_id, source_metadata, "NOVA 是什么？")
+        answer = await client.ask(
+            session_id,
+            source_metadata,
+            "这张图片是什么？",
+            image_parts=[
+                {
+                    "type": "image",
+                    "mediaType": "image/png",
+                    "data": "iVBORw0KGgo=",
+                }
+            ],
+        )
     finally:
         await client.close()
 
@@ -180,6 +203,7 @@ async def test_ask_creates_fixed_session_and_returns_completed_answer(
     assert methods == [
         "workspace.list",
         "session.create",
+        "session.selectModel",
         "session.history",
         "session.prompt",
         "session.history",
@@ -187,8 +211,18 @@ async def test_ask_creates_fixed_session_and_returns_completed_answer(
     ]
     assert prompt_payload["sessionId"] == session_id
     assert prompt_payload["mode"] == "queue"
-    metadata_block, question_block = prompt_payload["content"]
-    assert question_block == {"type": "text", "text": "NOVA 是什么？"}
+    assert select_payload == {
+        "sessionId": session_id,
+        "provider": "deepseek-official",
+        "model": "deepseek-v4-flash-vision-exp",
+    }
+    metadata_block, question_block, image_block = prompt_payload["content"]
+    assert question_block == {"type": "text", "text": "这张图片是什么？"}
+    assert image_block == {
+        "type": "image",
+        "mediaType": "image/png",
+        "data": "iVBORw0KGgo=",
+    }
     assert metadata_block["type"] == "text"
     assert metadata_block["text"].startswith(f"<{metadata_tag}>\n")
     assert metadata_block["text"].endswith(f"\n</{metadata_tag}>")
@@ -315,6 +349,16 @@ async def test_failed_turn_does_not_return_stale_assistant_message() -> None:
             )
         if method == "session.create":
             return rpc_response(request, {"sessionId": "s", "agentPreset": "nova-qa"})
+        if method == "session.selectModel":
+            return rpc_response(
+                request,
+                {
+                    "selected": {
+                        "provider": "deepseek-official",
+                        "model": "deepseek-v4-flash-vision-exp",
+                    }
+                },
+            )
         if method == "session.prompt":
             return rpc_response(request, {"accepted": True})
         if method == "session.history":

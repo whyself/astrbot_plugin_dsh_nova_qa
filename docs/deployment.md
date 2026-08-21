@@ -14,7 +14,7 @@
 ```bash
 corepack enable
 corepack prepare pnpm@11.7.0 --activate
-pnpm add --global @deepseek-ai/dsh@0.1.0-rc.7
+pnpm add --global @deepseek-ai/dsh@0.1.1-rc.1
 ```
 
 设置一次部署环境后安装 Bundle：
@@ -24,10 +24,21 @@ export DSH_HOME=/srv/nova/dsh-home
 export DSH_QA_WORKSPACE=/srv/nova/knowledge
 
 dsh plugin --profile web add \
-  https://github.com/whyself/dsh-knowledge-qa-plugin/releases/download/v0.1.0/dsh-knowledge-qa-bundle-0.1.0.tgz
+  https://github.com/whyself/dsh-knowledge-qa-plugin/releases/download/v0.2.0/dsh-knowledge-qa-bundle-0.2.0.tgz
 ```
 
 不需要把 QA 仓库中的 `presets/` 或 `profiles/` 复制到服务器；发布包已经注册 `nova-qa` 和固定 Workspace。
+
+在 `$DSH_HOME/settings.yaml` 使用 DSH 官方默认模型设置：
+
+```yaml
+agent-default-model:
+  provider: deepseek-official
+  model: deepseek-v4-flash-vision-exp
+  reasoningEffort: high
+```
+
+Bundle 的官方 `agent-default-model` Cordis 行提供相同的组合默认值；`settings.yaml` 是服务器保存的用户设置层。Agent Preset 文件不配置模型。
 
 ## 3. 配置并启动 DSH
 
@@ -109,12 +120,14 @@ https://github.com/whyself/astrbot_plugin_dsh_nova_qa
 安装后进入插件配置：
 
 1. `dsh_base_url`：同机非容器可留空；其他私有网络填写内部 DSH URL。
-2. `group_whitelist`：逐项填写允许使用的群 ID；QQ 官方机器人填写 `group_openid`。
-3. `user_whitelist`：逐项填写允许通过好友私聊 `/cac <问题>` 使用知识库的 QQ 用户 ID。
-4. `session_hourly_limit`：填写每个群或好友 Session 最近 3600 秒允许的问题数；`0` 表示关闭限额。
-5. `fold_long_responses`：保持开启即可让 aiocqhttp 把过长回答显示为可展开的 QQ 聊天记录；`fold_response_threshold` 默认 `800` 个字符。
-6. 保持 `request_timeout_seconds=15`、`response_timeout_seconds=180`、`poll_interval_seconds=0.5`，除非服务器日志表明需要调整。
-7. 保存并重载插件。
+2. `dsh_model_name`：保持 `deepseek-v4-flash-vision-exp`，插件会把新旧 QQ Session 切换到该视觉模型。
+3. `group_whitelist`：逐项填写允许使用的群 ID；QQ 官方机器人填写 `group_openid`。
+4. `user_whitelist`：逐项填写允许通过好友私聊 `/cac <问题>` 使用知识库的 QQ 用户 ID。
+5. 图片限制保持 `20` 张、单张 `3670016` 字节、合计 `20971520` 字节、总转换时限 `30` 秒；DSH 侧限制更严格时同步收紧。
+6. `session_hourly_limit`：填写每个群或好友 Session 最近 3600 秒允许的问题数；`0` 表示关闭限额。
+7. `fold_long_responses`：保持开启即可让 aiocqhttp 把过长回答显示为可展开的 QQ 聊天记录；`fold_response_threshold` 默认 `800` 个字符。
+8. 保持 `request_timeout_seconds=15`、`response_timeout_seconds=180`、`poll_interval_seconds=0.5`，除非服务器日志表明需要调整。
+9. 保存并重载插件。
 
 ## 7. 端到端验收
 
@@ -124,12 +137,15 @@ https://github.com/whyself/astrbot_plugin_dsh_nova_qa
 @机器人 NOVA 是什么？
 ```
 
+再测试两种图片输入：同一条消息发送“图片 + `@机器人` + 问题”，以及在 aiocqhttp 下引用一条图片消息后显式 `@机器人` 提问。插件不采集未 @ 的普通群图片。
+
 检查以下结果：
 
 - 机器人只回复一次。
 - 短回答引用原提问；超过折叠阈值的回答在 aiocqhttp 下显示为一条可展开的聊天记录。
 - 同群追问能记住上一轮；另一白名单群不会继承这个上下文。
 - 非白名单群、未 @机器人、只 @其他人的消息没有响应。
+- 两种显式 @ 的图片提问都能得到依赖图片内容的回答；只有图片时会按默认视觉问题处理。
 - 群聊 `@机器人 /其他命令` 仍由原命令插件处理。
 - DSH Web 中出现形如 `qq-group-<bot_id>-<group_id>` 的 Session，Preset 是 `nova-qa`。
 - 白名单好友私聊 `/cac NOVA 是什么？` 能回答，普通私聊和非白名单好友 `/cac` 不触发。
