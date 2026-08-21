@@ -112,8 +112,9 @@ https://github.com/whyself/astrbot_plugin_dsh_nova_qa
 2. `group_whitelist`：逐项填写允许使用的群 ID；QQ 官方机器人填写 `group_openid`。
 3. `user_whitelist`：逐项填写允许通过好友私聊 `/cac <问题>` 使用知识库的 QQ 用户 ID。
 4. `session_hourly_limit`：填写每个群或好友 Session 最近 3600 秒允许的问题数；`0` 表示关闭限额。
-5. 保持 `request_timeout_seconds=15`、`response_timeout_seconds=180`、`poll_interval_seconds=0.5`，除非服务器日志表明需要调整。
-6. 保存并重载插件。
+5. `fold_long_responses`：保持开启即可让 aiocqhttp 把过长回答显示为可展开的 QQ 聊天记录；`fold_response_threshold` 默认 `800` 个字符。
+6. 保持 `request_timeout_seconds=15`、`response_timeout_seconds=180`、`poll_interval_seconds=0.5`，除非服务器日志表明需要调整。
+7. 保存并重载插件。
 
 ## 7. 端到端验收
 
@@ -126,6 +127,7 @@ https://github.com/whyself/astrbot_plugin_dsh_nova_qa
 检查以下结果：
 
 - 机器人只回复一次。
+- 短回答引用原提问；超过折叠阈值的回答在 aiocqhttp 下显示为一条可展开的聊天记录。
 - 同群追问能记住上一轮；另一白名单群不会继承这个上下文。
 - 非白名单群、未 @机器人、只 @其他人的消息没有响应。
 - 群聊 `@机器人 /其他命令` 仍由原命令插件处理。

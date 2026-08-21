@@ -51,6 +51,24 @@ class FakeReply:
         return {"type": "reply", "data": data}
 
 
+class FakeNode:
+    def __init__(
+        self,
+        *,
+        uin: str | None,
+        name: str | None,
+        content: list[object],
+    ) -> None:
+        self.uin = uin
+        self.name = name
+        self.content = content
+
+
+class FakeNodes:
+    def __init__(self, nodes: list[FakeNode]) -> None:
+        self.nodes = nodes
+
+
 class FakeDshClient:
     instances: ClassVar[list[FakeDshClient]] = []
 
@@ -189,6 +207,8 @@ def _install_astrbot_stubs() -> None:
     event.filter = Filter
     components = types.ModuleType("astrbot.api.message_components")
     components.At = FakeAt
+    components.Node = FakeNode
+    components.Nodes = FakeNodes
     components.Plain = FakePlain
     components.Reply = FakeReply
     star = types.ModuleType("astrbot.api.star")
@@ -313,6 +333,24 @@ def assert_group_reply(results: list[object], message_id: str, text: str) -> Non
     assert plain.text == text
 
 
+def assert_forward_record(results: list[object], bot_id: str, text: str) -> None:
+    assert len(results) == 1
+    chain = results[0]
+    assert isinstance(chain, list)
+    assert len(chain) == 1
+    nodes = chain[0]
+    assert isinstance(nodes, FakeNodes)
+    assert len(nodes.nodes) == 1
+    node = nodes.nodes[0]
+    assert isinstance(node, FakeNode)
+    assert node.uin == bot_id
+    assert node.name == "NovaBot"
+    assert len(node.content) == 1
+    plain = node.content[0]
+    assert isinstance(plain, FakePlain)
+    assert plain.text == text
+
+
 @pytest.mark.asyncio
 async def test_private_plain_message_is_released(plugin_module) -> None:
     plugin = make_plugin(plugin_module)
@@ -371,13 +409,44 @@ async def test_private_cac_routes_to_private_session_and_stops_event(plugin_modu
 
 
 @pytest.mark.asyncio
+async def test_private_long_answer_is_folded_into_forward_record(plugin_module) -> None:
+    plugin = make_plugin(plugin_module, fold_response_threshold=10)
+    answer = "私聊长回答" * 3
+
+    async def long_ask(*_args: object) -> str:
+        return answer
+
+    plugin.dsh.ask = long_ask
+    event = FakeEvent(sender_id="42", text="/cac 请详细说明", private=True)
+
+    results = await collect(plugin.on_private_cac(event))
+
+    assert_forward_record(results, "7", answer)
+    assert event.stopped
+
+
+@pytest.mark.asyncio
 async def test_private_empty_cac_reports_usage_without_calling_dsh(plugin_module) -> None:
-    plugin = make_plugin(plugin_module)
+    plugin = make_plugin(plugin_module, fold_response_threshold=0)
     event = FakeEvent(sender_id="42", text="/cac", private=True)
 
     assert await collect(plugin.on_private_cac(event)) == ["用法: /cac <问题>"]
     assert event.stopped
     assert plugin.dsh.calls == []
+
+
+@pytest.mark.asyncio
+async def test_private_dsh_error_is_not_folded_at_zero_threshold(plugin_module) -> None:
+    plugin = make_plugin(plugin_module, fold_response_threshold=0)
+
+    async def failing_ask(*_args: object) -> str:
+        raise plugin_module.DshError("failed")
+
+    plugin.dsh.ask = failing_ask
+    event = FakeEvent(sender_id="42", text="/cac NOVA 是什么？", private=True)
+
+    assert await collect(plugin.on_private_cac(event)) == ["知识库服务暂时不可用，请稍后再试。"]
+    assert event.stopped
 
 
 @pytest.mark.asyncio
@@ -718,6 +787,86 @@ async def test_group_response_quotes_the_triggering_message(plugin_module) -> No
 
 
 @pytest.mark.asyncio
+async def test_empty_group_prompt_is_not_folded_at_zero_threshold(plugin_module) -> None:
+    plugin = make_plugin(plugin_module, fold_response_threshold=0)
+    event = FakeEvent(
+        sender_id="42",
+        text="",
+        private=False,
+        group_id="9",
+        message_id="empty-question",
+    )
+
+    results = await collect(plugin.on_group_message(event))
+
+    assert_group_reply(results, "empty-question", "请在 @机器人 后写上问题。")
+    assert plugin.dsh.calls == []
+
+
+@pytest.mark.asyncio
+async def test_group_long_answer_is_folded_without_reply_component(plugin_module) -> None:
+    plugin = make_plugin(plugin_module, fold_response_threshold=10)
+    answer = "群聊长回答" * 3
+
+    async def long_ask(*_args: object) -> str:
+        return answer
+
+    plugin.dsh.ask = long_ask
+    event = FakeEvent(
+        sender_id="42",
+        text="请详细说明",
+        private=False,
+        group_id="9",
+        message_id="question-long",
+    )
+
+    results = await collect(plugin.on_group_message(event))
+
+    assert_forward_record(results, "7", answer)
+
+
+@pytest.mark.asyncio
+async def test_answer_at_fold_threshold_keeps_normal_group_reply(plugin_module) -> None:
+    answer = "DSH answer"
+    plugin = make_plugin(plugin_module, fold_response_threshold=len(answer))
+    event = FakeEvent(sender_id="42", text="问题", private=False, group_id="9")
+
+    results = await collect(plugin.on_group_message(event))
+
+    assert_group_reply(results, "message-1", answer)
+
+
+@pytest.mark.asyncio
+async def test_fold_disabled_keeps_long_group_reply(plugin_module) -> None:
+    plugin = make_plugin(
+        plugin_module,
+        fold_long_responses=False,
+        fold_response_threshold=0,
+    )
+    event = FakeEvent(sender_id="42", text="问题", private=False, group_id="9")
+
+    results = await collect(plugin.on_group_message(event))
+
+    assert_group_reply(results, "message-1", "DSH answer")
+
+
+@pytest.mark.asyncio
+async def test_non_aiocqhttp_long_answer_keeps_normal_group_reply(plugin_module) -> None:
+    plugin = make_plugin(plugin_module, fold_response_threshold=0)
+    event = FakeEvent(
+        sender_id="42",
+        text="问题",
+        private=False,
+        group_id="9",
+        platform="qq_official",
+    )
+
+    results = await collect(plugin.on_group_message(event))
+
+    assert_group_reply(results, "message-1", "DSH answer")
+
+
+@pytest.mark.asyncio
 async def test_group_stops_propagation_only_after_yielding_its_reply(
     plugin_module,
 ) -> None:
@@ -743,7 +892,7 @@ async def test_group_stops_propagation_only_after_yielding_its_reply(
 
 @pytest.mark.asyncio
 async def test_group_dsh_error_quotes_the_triggering_message(plugin_module) -> None:
-    plugin = make_plugin(plugin_module)
+    plugin = make_plugin(plugin_module, fold_response_threshold=0)
 
     async def failing_ask(*_args: object) -> str:
         raise plugin_module.DshError("failed")
@@ -764,6 +913,23 @@ async def test_group_dsh_error_quotes_the_triggering_message(plugin_module) -> N
         "failed-question",
         "知识库服务暂时不可用，请稍后再试。",
     )
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("fold_long_responses", "true"),
+        ("fold_response_threshold", -1),
+        ("fold_response_threshold", True),
+    ],
+)
+def test_fold_configuration_rejects_invalid_values(
+    plugin_module,
+    key: str,
+    value: object,
+) -> None:
+    with pytest.raises(ValueError):
+        make_plugin(plugin_module, **{key: value})
 
 
 @pytest.mark.asyncio
@@ -889,7 +1055,11 @@ async def test_different_sessions_can_run_concurrently(plugin_module) -> None:
 async def test_hourly_limit_is_queued_and_quotes_the_rejected_question(
     plugin_module,
 ) -> None:
-    plugin = make_plugin(plugin_module, session_hourly_limit=1)
+    plugin = make_plugin(
+        plugin_module,
+        session_hourly_limit=1,
+        fold_response_threshold=0,
+    )
     first_started = asyncio.Event()
     release_first = asyncio.Event()
     asked: list[str] = []
@@ -929,9 +1099,26 @@ async def test_hourly_limit_is_queued_and_quotes_the_rejected_question(
     release_first.set()
     first_results, limited_results = await asyncio.gather(first_task, limited_task)
 
-    assert_group_reply(first_results, "first", "回答: 第一问")
+    assert_forward_record(first_results, "7", "回答: 第一问")
     assert_group_reply(limited_results, "limited", plugin_module.HOURLY_LIMIT_MESSAGE)
     assert asked == ["第一问"]
+
+
+@pytest.mark.asyncio
+async def test_private_hourly_limit_is_not_folded_at_zero_threshold(plugin_module) -> None:
+    plugin = make_plugin(
+        plugin_module,
+        session_hourly_limit=1,
+        fold_response_threshold=0,
+    )
+    first = FakeEvent(sender_id="42", text="/cac 第一问", private=True)
+    limited = FakeEvent(sender_id="42", text="/cac 第二问", private=True)
+
+    first_results = await collect(plugin.on_private_cac(first))
+    limited_results = await collect(plugin.on_private_cac(limited))
+
+    assert_forward_record(first_results, "7", "DSH answer")
+    assert limited_results == [plugin_module.HOURLY_LIMIT_MESSAGE]
 
 
 @pytest.mark.asyncio

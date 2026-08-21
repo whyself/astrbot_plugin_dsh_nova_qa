@@ -20,7 +20,8 @@
 - 每个 `bot_id + group_id` 对应一个稳定的 DSH Session，同群上下文连续，不同群完全分开。
 - 每个 `bot_id + sender_id` 对应另一个 `qq-private` Session；好友私聊不会与任何群聊共享上下文。
 - 同一 Session 的消息严格按 FIFO 顺序逐条处理和回复，上一轮结束后才处理下一条；不同 Session 仍可并发。
-- 群聊的正常回答、用法提示、限额提示和故障提示都会引用触发它们的原消息，便于多人同时提问时对应上下文。
+- 群聊的短回答、用法提示、限额提示和故障提示都会引用触发它们的原消息，便于多人同时提问时对应上下文。
+- aiocqhttp 下超过配置阈值的正常回答会作为单条 QQ 合并转发发送，在客户端显示为可展开的聊天记录；群聊长回答不再附带引用，因为 QQ 不允许把 Reply 和合并转发混在同一条消息中。私聊长回答同样折叠，其他 QQ 适配器继续发送普通文本。
 - 每个 Session 默认最多接受最近 3600 秒内的 20 个问题；达到上限会自动回复提示，其他群和好友 Session 不受影响。
 - DSH 必须只注册一个名为 `NOVA知识库` 的 Workspace，新 Session 必须解析为 `nova-qa` Preset，否则插件拒绝工作。
 - DSH 失败或超时时，原会话只收到简短的暂不可用提示，详细错误留在 AstrBot 日志。
@@ -50,6 +51,8 @@ AstrBot 会读取 `metadata.yaml` 并自动安装 `requirements.txt` 中的 `htt
 | `group_whitelist` | `[]` | 允许触发的 QQ 群 ID。QQ 官方机器人填写事件提供的 `group_openid` |
 | `user_whitelist` | `[]` | 允许通过私聊 `/cac <问题>` 触发的 QQ 用户 ID；QQ 官方机器人填写发送者 `openid` |
 | `session_hourly_limit` | `20` | 每个群或好友 Session 最近 3600 秒内允许的问题数；`0` 表示关闭限额 |
+| `fold_long_responses` | `true` | aiocqhttp 下是否把过长的正常回答折叠成 QQ 合并转发 |
+| `fold_response_threshold` | `800` | 正常回答严格超过此 Unicode 字符数时折叠；`0` 表示折叠所有非空正常回答 |
 | `request_timeout_seconds` | `15` | 单次 DSH HTTP RPC 的网络超时 |
 | `response_timeout_seconds` | `180` | 等待一轮 DSH 回答完成的总时限 |
 | `poll_interval_seconds` | `0.5` | 查询 Session 历史的间隔 |
@@ -61,6 +64,8 @@ export DSH_BASE_URL=http://127.0.0.1:3081
 ```
 
 限额只保存在 AstrBot 插件进程内存中；插件重载或 AstrBot 重启后重新计数。只有通过限额检查、准备提交给 DSH 的有效问题才计数，空问题和未触发消息不计数。
+
+折叠只应用于 DSH 返回的正常回答。空问题用法、小时限额和服务故障提示始终保持短文本，以免简单提示被包装成聊天记录。字符数按 Python `len()` 计算；阈值内的群回答继续引用原提问。
 
 `DSH_HOME`、`DSH_QA_WORKSPACE` 和 `DEEPSEEK_API_KEY` 属于 DSH 服务，不应填入 AstrBot 插件配置。
 

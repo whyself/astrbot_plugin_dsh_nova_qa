@@ -29,6 +29,18 @@
     "default": 20,
     "hint": "每个群或好友分别按最近 3600 秒计数；达到上限会自动回复提示。填写 0 可关闭限额，插件重载后计数清空。"
   },
+  "fold_long_responses": {
+    "type": "bool",
+    "description": "将过长的正常回答折叠为 QQ 聊天记录",
+    "default": true,
+    "hint": "仅 aiocqhttp 支持合并转发；其他 QQ 适配器继续发送普通文本。用法、限额和故障提示不会折叠。"
+  },
+  "fold_response_threshold": {
+    "type": "int",
+    "description": "折叠回答的字符数阈值",
+    "default": 800,
+    "hint": "正常回答字符数严格超过此值时折叠；按 Unicode 字符计数。填写 0 会折叠所有非空正常回答。"
+  },
   "request_timeout_seconds": {
     "type": "int",
     "description": "单次 DSH RPC 网络超时（秒）",

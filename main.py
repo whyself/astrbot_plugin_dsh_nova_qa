@@ -8,7 +8,7 @@ from typing import Any
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import At, Plain, Reply
+from astrbot.api.message_components import At, Node, Nodes, Plain, Reply
 from astrbot.api.star import Context, Star, register
 
 from .dsh_client import DshClient, DshError
@@ -32,6 +32,7 @@ SUPPORTED_QQ_PLATFORMS = frozenset({"aiocqhttp", "qq_official", "qq_official_web
 GROUP_HANDLER_PRIORITY = 50
 GROUP_DEFAULT_LLM_GUARD_PRIORITY = -1000
 HOURLY_LIMIT_MESSAGE = "本会话每小时提问次数已达到上限，请稍后再试。"
+FORWARD_SENDER_NAME = "NovaBot"
 
 
 def _config_number(config: AstrBotConfig, key: str, default: float) -> float:
@@ -45,6 +46,13 @@ def _config_nonnegative_int(config: AstrBotConfig, key: str, default: int) -> in
     value: Any = config.get(key, default)
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{key} must be a non-negative integer")
+    return value
+
+
+def _config_bool(config: AstrBotConfig, key: str, default: bool) -> bool:
+    value: Any = config.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"{key} must be a boolean")
     return value
 
 
@@ -73,7 +81,7 @@ def _message_timestamp(event: AstrMessageEvent) -> int:
     "astrbot_plugin_dsh_nova_qa",
     "whyself",
     "把白名单 QQ 群 @提问及白名单好友 /cac 私聊转发给 DSH NOVA 知识库",
-    "1.3.1",
+    "1.4.0",
 )
 class DshNovaQaPlugin(Star):
     """Route each allowlisted QQ group or friend to a stable NOVA QA Session."""
@@ -97,6 +105,12 @@ class DshNovaQaPlugin(Star):
             poll_interval_seconds=_config_number(config, "poll_interval_seconds", 0.5),
         )
         self.session_hourly_limit = _config_nonnegative_int(config, "session_hourly_limit", 20)
+        self.fold_long_responses = _config_bool(config, "fold_long_responses", True)
+        self.fold_response_threshold = _config_nonnegative_int(
+            config,
+            "fold_response_threshold",
+            800,
+        )
         self._rate_limiter = SessionHourlyLimiter(self.session_hourly_limit)
         self._session_locks: dict[str, asyncio.Lock] = {}
 
@@ -105,11 +119,14 @@ class DshNovaQaPlugin(Star):
 
         logger.info(
             "DSH NOVA QA plugin loaded: endpoint=%s, allowlisted_groups=%d, "
-            "allowlisted_users=%d, session_hourly_limit=%d",
+            "allowlisted_users=%d, session_hourly_limit=%d, "
+            "fold_long_responses=%s, fold_response_threshold=%d",
             self.dsh_base_url,
             len(self.group_whitelist),
             len(self.user_whitelist),
             self.session_hourly_limit,
+            self.fold_long_responses,
+            self.fold_response_threshold,
         )
 
     @staticmethod
@@ -129,6 +146,25 @@ class DshNovaQaPlugin(Star):
             seq=None,
         )
         return event.chain_result([reply, Plain(text)])
+
+    def _answer_result(self, event: AstrMessageEvent, text: str, *, quote: bool):
+        """Fold long aiocqhttp answers; preserve ordinary response rendering."""
+
+        should_fold = (
+            self.fold_long_responses
+            and event.get_platform_name() == "aiocqhttp"
+            and len(text) > self.fold_response_threshold
+        )
+        if should_fold:
+            node = Node(
+                uin=str(event.get_self_id()),
+                name=FORWARD_SENDER_NAME,
+                content=[Plain(text)],
+            )
+            return event.chain_result([Nodes([node])])
+        if quote:
+            return self._group_result(event, text)
+        return event.plain_result(text)
 
     @filter.event_message_type(
         filter.EventMessageType.GROUP_MESSAGE,
@@ -194,7 +230,7 @@ class DshNovaQaPlugin(Star):
                 event.stop_event()
                 return
 
-            yield self._group_result(event, answer)
+            yield self._answer_result(event, answer, quote=True)
             event.stop_event()
 
     @filter.event_message_type(
@@ -266,7 +302,7 @@ class DshNovaQaPlugin(Star):
                 event.stop_event()
                 return
 
-            yield event.plain_result(answer)
+            yield self._answer_result(event, answer, quote=False)
             event.stop_event()
 
     async def terminate(self) -> None:
